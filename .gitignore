@@ -33,6 +33,12 @@ Thumbs.db
 # Documentation build artifacts (if any)
 docs/_build/
 
+# Local-only files (not pushed to GitHub)
+roadmap
+WIREFRAME_SPEC.md
+TECH_STACK.md
+Issues
+
 # Keep subdirectory gitignores
 !photonix-backend/.gitignore
 !photonix-mobile/.gitignore

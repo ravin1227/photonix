@@ -1,0 +1,96 @@
+services:
+  db:
+    image: postgres:16-alpine
+    volumes:
+      - postgres_data:/var/lib/postgresql/data
+    environment:
+      POSTGRES_USER: photonix
+      POSTGRES_PASSWORD: photonix_dev_password
+      POSTGRES_DB: photonix_development
+    ports:
+      - "5432:5432"
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U photonix"]
+      interval: 10s
+      timeout: 5s
+      retries: 5
+
+  redis:
+    image: redis:7-alpine
+    volumes:
+      - redis_data:/data
+    ports:
+      - "6379:6379"
+    healthcheck:
+      test: ["CMD", "redis-cli", "ping"]
+      interval: 10s
+      timeout: 3s
+      retries: 5
+
+  web:
+    build:
+      context: .
+      dockerfile: Dockerfile.dev
+    command: bundle exec rails server -b 0.0.0.0
+    volumes:
+      - .:/rails
+      - bundle_cache:/usr/local/bundle
+      - /Users/ravi/Documents/photos:/rails/storage
+    ports:
+      - "3000:3000"
+    environment:
+      DATABASE_URL: postgresql://photonix:photonix_dev_password@db:5432/photonix_development
+      REDIS_URL: redis://redis:6379/0
+      RAILS_ENV: development
+      STORAGE_ROOT: /rails/storage
+      FACE_DETECTION_SERVICE_URL: http://face-detection:8000
+    depends_on:
+      db:
+        condition: service_healthy
+      redis:
+        condition: service_healthy
+    stdin_open: true
+    tty: true
+
+  sidekiq:
+    build:
+      context: .
+      dockerfile: Dockerfile.dev
+    command: bundle exec sidekiq
+    volumes:
+      - .:/rails
+      - bundle_cache:/usr/local/bundle
+      - /Users/ravi/Documents/photos:/rails/storage
+    environment:
+      DATABASE_URL: postgresql://photonix:photonix_dev_password@db:5432/photonix_development
+      REDIS_URL: redis://redis:6379/0
+      RAILS_ENV: development
+      STORAGE_ROOT: /rails/storage
+      FACE_DETECTION_SERVICE_URL: http://face-detection:8000
+    depends_on:
+      db:
+        condition: service_healthy
+      redis:
+        condition: service_healthy
+
+  face-detection:
+    build:
+      context: ./face-detection-service
+      dockerfile: Dockerfile
+    ports:
+      - "8000:8000"
+    volumes:
+      - /Users/ravi/Documents/photos:/storage
+    environment:
+      PYTHONUNBUFFERED: 1
+    healthcheck:
+      test: ["CMD", "python", "-c", "import requests; requests.get('http://localhost:8000/health')"]
+      interval: 30s
+      timeout: 10s
+      retries: 3
+      start_period: 40s
+
+volumes:
+  postgres_data:
+  redis_data:
+  bundle_cache:

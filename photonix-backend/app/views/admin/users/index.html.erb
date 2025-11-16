@@ -1,0 +1,81 @@
+<div class="px-4 py-6">
+  <div class="sm:flex sm:items-center sm:justify-between mb-6">
+    <div>
+      <h2 class="text-2xl font-bold text-black">Users</h2>
+      <p class="mt-1 text-sm text-black">Manage all users in your Photonix system</p>
+    </div>
+    <div class="mt-4 sm:mt-0">
+      <%= link_to "Create New User", new_admin_user_path, class: "inline-flex items-center px-4 py-2 border border-transparent text-sm font-medium rounded-md shadow-sm text-white bg-gray-900 hover:bg-gray-800 focus:outline-none focus:ring-2 focus:ring-offset-2 focus:ring-gray-500" %>
+    </div>
+  </div>
+
+  <div class="bg-white shadow overflow-hidden sm:rounded-lg">
+    <table class="min-w-full divide-y divide-gray-200">
+      <thead class="bg-gray-50">
+        <tr>
+          <th scope="col" class="px-6 py-3 text-left text-xs font-medium text-black uppercase tracking-wider">
+            User
+          </th>
+          <th scope="col" class="px-6 py-3 text-left text-xs font-medium text-black uppercase tracking-wider">
+            Role
+          </th>
+          <th scope="col" class="px-6 py-3 text-left text-xs font-medium text-black uppercase tracking-wider">
+            Photos
+          </th>
+          <th scope="col" class="px-6 py-3 text-left text-xs font-medium text-black uppercase tracking-wider">
+            Albums
+          </th>
+          <th scope="col" class="px-6 py-3 text-left text-xs font-medium text-black uppercase tracking-wider">
+            Joined
+          </th>
+          <th scope="col" class="relative px-6 py-3">
+            <span class="sr-only">Actions</span>
+          </th>
+        </tr>
+      </thead>
+      <tbody class="bg-white divide-y divide-gray-200">
+        <% @users.each do |user| %>
+          <tr>
+            <td class="px-6 py-4 whitespace-nowrap">
+              <div class="flex items-center">
+                <div>
+                  <div class="text-sm font-medium text-black">
+                    <%= user.name %>
+                  </div>
+                  <div class="text-sm text-black">
+                    <%= user.email %>
+                  </div>
+                </div>
+              </div>
+            </td>
+            <td class="px-6 py-4 whitespace-nowrap">
+              <span class="inline-flex items-center px-2.5 py-0.5 rounded-full text-xs font-medium bg-gray-100 text-black">
+                <%= user.role %>
+              </span>
+            </td>
+            <td class="px-6 py-4 whitespace-nowrap text-sm text-black">
+              <%= user.photos.active.count %>
+            </td>
+            <td class="px-6 py-4 whitespace-nowrap text-sm text-black">
+              <%= user.albums.count %>
+            </td>
+            <td class="px-6 py-4 whitespace-nowrap text-sm text-black">
+              <%= user.created_at.strftime("%b %d, %Y") %>
+            </td>
+            <td class="px-6 py-4 whitespace-nowrap text-right text-sm font-medium">
+              <%= link_to "View", admin_user_path(user), class: "text-black hover:text-gray-700 mr-4" %>
+              <%= link_to "Edit", edit_admin_user_path(user), class: "text-black hover:text-gray-700 mr-4" %>
+              <%= button_to "Delete", admin_user_path(user), method: :delete, data: { confirm: "Are you sure you want to delete this user? This will also delete all their photos and albums." }, class: "text-black hover:text-gray-700" %>
+            </td>
+          </tr>
+        <% end %>
+      </tbody>
+    </table>
+
+    <% if @users.empty? %>
+      <div class="text-center py-12">
+        <p class="text-sm text-black">No users found</p>
+      </div>
+    <% end %>
+  </div>
+</div>

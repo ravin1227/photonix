@@ -1,0 +1,114 @@
+I want you to think like a senior systems architect and product designer.
+
+Your task is to design a full architecture, roadmap, and working principle for a self-hosted AI-powered photo gallery application, similar to Google Photos, Immich, Apple Photos, and Prism.
+
+DO NOT write any code. Do NOT generate files. Focus on deep system thinking, feature breakdown, conceptual flows, and architectural clarity.
+
+### GOAL:
+Design the entire system for a future production-ready application that can run locally first (on macOS), and later be deployed on a Raspberry Pi or Linux server. All photos must be stored locally (USB, SSD, or external drive).
+
+### BACKEND REQUIREMENTS:
+- Use **Ruby on Rails** as the main backend framework.
+- Use **PostgreSQL** as the database.
+- Support background jobs (Sidekiq or Rails ActiveJob).
+- Include a separate AI worker service (Python recommended) for face detection, tagging, and photo analysis.
+- API must be clean and ready for mobile + web.
+
+### CORE FEATURES:
+- Photo upload (local network first).
+- Local storage of all originals + generated thumbnails.
+- EXIF metadata extraction.
+- Albums, tags, search, filters.
+- AI features including:
+  - Face detection + face grouping (clustering)
+  - Scene/object tagging
+  - Duplicate detection
+  - Photo similarity search
+- Local-first design (privacy focused).
+- Optional remote access later.
+
+### STORAGE REQUIREMENTS:
+- Ability to store photos on:
+  - macOS filesystem
+  - external USB drive (pendrive/HDD/SSD)
+  - Raspberry Pi mounted drive
+- Must support S3-compatible storage in future (MinIO).
+
+### INFRASTRUCTURE REQUIREMENTS:
+- First run on **Docker on macOS** for development.
+- Later deploy on a **Raspberry Pi**, with arm64-compatible containers.
+- Clear explanation of how Docker binds to local storage paths (no code).
+- LAN accessibility (same Wi-Fi network) before enabling public routing.
+- Future public access via domain + reverse proxy.
+
+### OUTPUT FORMAT (VERY IMPORTANT):
+Create a structured, well-written document containing:
+
+1. **Product Description**
+   - What the app is
+   - Who it is for
+   - Why it is useful
+
+2. **System Overview**
+   - All components and how they interact
+   - Rails backend role
+   - AI worker role
+   - Database role
+   - Storage subsystem
+   - Background job pipeline
+   - API / Web / Mobile clients
+
+3. **Architecture Diagram (text-only)**
+   - Show the flow between all components
+
+4. **Data Model Outline**
+   - Tables/entities (no schema, just conceptual fields)
+
+5. **AI Processing Pipeline**
+   - How faces are processed
+   - How clusters are created
+   - How tags are generated
+   - How duplicate detection works
+
+6. **Storage Strategy**
+   - How photos are stored
+   - How Rails accesses local files
+   - How Docker volumes work conceptually
+   - How this maps to Raspberry Pi external drives
+
+7. **Networking**
+   - How the app is accessed locally on LAN
+   - How the server exposes itself
+   - High-level plan (no commands) for enabling remote access later
+
+8. **Performance Considerations**
+   - Running AI on Raspberry Pi (tradeoffs)
+   - Offloading heavy AI tasks
+   - Caching thumbnails
+
+9. **Security & Privacy**
+   - Local-first privacy model
+   - Authentication and permissions
+   - Recommended best practices
+
+10. **Migration Plan**
+   - macOS local → Raspberry Pi
+   - How to adapt storage paths
+   - How to adapt containers
+   - High-level deployment steps
+
+11. **Development Roadmap**
+   - Step-by-step phases from MVP → production app
+   - Focus on sequence: storage, upload, metadata, AI, UI, etc.
+
+12. **Business Naming**
+   - Suggest strong brandable product names suitable for a future business
+
+### RULES:
+- DO NOT generate any code of any kind.
+- DO NOT reference filenames or code structure.
+- Keep everything high-level and conceptual.
+- Assume unlimited technical capability, but optimize for simplicity.
+- The answer should read like a professional architectural planning document for a future product.
+
+Begin.

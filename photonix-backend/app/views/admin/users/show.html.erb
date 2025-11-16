@@ -1,0 +1,116 @@
+<div class="px-4 py-6">
+  <div class="mb-6 sm:flex sm:items-center sm:justify-between">
+    <div>
+      <h2 class="text-2xl font-bold text-gray-900"><%= @user.name %></h2>
+      <p class="mt-1 text-sm text-gray-600"><%= @user.email %></p>
+    </div>
+    <div class="mt-4 sm:mt-0 flex space-x-3">
+      <%= link_to "Edit", edit_admin_user_path(@user), class: "inline-flex items-center px-4 py-2 border border-gray-300 text-sm font-medium rounded-md shadow-sm text-gray-700 bg-white hover:bg-gray-50 focus:outline-none focus:ring-2 focus:ring-offset-2 focus:ring-blue-500" %>
+      <%= button_to "Delete", admin_user_path(@user), method: :delete, data: { confirm: "Are you sure you want to delete this user? This will also delete all their photos and albums." }, class: "inline-flex items-center px-4 py-2 border border-transparent text-sm font-medium rounded-md shadow-sm text-white bg-red-600 hover:bg-red-700 focus:outline-none focus:ring-2 focus:ring-offset-2 focus:ring-red-500" %>
+    </div>
+  </div>
+
+  <!-- User Info Cards -->
+  <div class="grid grid-cols-1 gap-5 sm:grid-cols-2 lg:grid-cols-4 mb-8">
+    <div class="bg-white overflow-hidden shadow rounded-lg">
+      <div class="px-4 py-5 sm:p-6">
+        <dt class="text-sm font-medium text-gray-500 truncate">Role</dt>
+        <dd class="mt-1">
+          <span class="inline-flex items-center px-2.5 py-0.5 rounded-full text-xs font-medium <%= @user.admin? ? 'bg-purple-100 text-purple-800' : 'bg-blue-100 text-blue-800' %>">
+            <%= @user.role %>
+          </span>
+        </dd>
+      </div>
+    </div>
+
+    <div class="bg-white overflow-hidden shadow rounded-lg">
+      <div class="px-4 py-5 sm:p-6">
+        <dt class="text-sm font-medium text-gray-500 truncate">Photos</dt>
+        <dd class="mt-1 text-2xl font-semibold text-gray-900"><%= @user.photos.active.count %></dd>
+      </div>
+    </div>
+
+    <div class="bg-white overflow-hidden shadow rounded-lg">
+      <div class="px-4 py-5 sm:p-6">
+        <dt class="text-sm font-medium text-gray-500 truncate">Albums</dt>
+        <dd class="mt-1 text-2xl font-semibold text-gray-900"><%= @user.albums.count %></dd>
+      </div>
+    </div>
+
+    <div class="bg-white overflow-hidden shadow rounded-lg">
+      <div class="px-4 py-5 sm:p-6">
+        <dt class="text-sm font-medium text-gray-500 truncate">Member Since</dt>
+        <dd class="mt-1 text-sm text-gray-900"><%= @user.created_at.strftime("%b %d, %Y") %></dd>
+      </div>
+    </div>
+  </div>
+
+  <!-- Owned Albums -->
+  <div class="bg-white shadow rounded-lg mb-6">
+    <div class="px-4 py-5 sm:p-6">
+      <h3 class="text-lg font-medium text-gray-900 mb-4">Owned Albums</h3>
+      <% if @user.albums.any? %>
+        <div class="grid grid-cols-1 gap-4 sm:grid-cols-2 lg:grid-cols-3">
+          <% @user.albums.each do |album| %>
+            <div class="border border-gray-200 rounded-lg p-4">
+              <div class="flex items-center justify-between mb-2">
+                <h4 class="text-sm font-medium text-gray-900"><%= album.name %></h4>
+                <% if album.is_shared %>
+                  <span class="inline-flex items-center px-2 py-0.5 rounded text-xs font-medium bg-green-100 text-green-800">
+                    Shared
+                  </span>
+                <% end %>
+              </div>
+              <% if album.description.present? %>
+                <p class="text-sm text-gray-500 mb-2"><%= album.description %></p>
+              <% end %>
+              <div class="text-sm text-gray-500">
+                <%= album.photos.count %> photos
+                <% if album.is_shared %>
+                  &middot; <%= album.album_users.count %> shared with
+                <% end %>
+              </div>
+            </div>
+          <% end %>
+        </div>
+      <% else %>
+        <p class="text-sm text-gray-500">No albums created yet</p>
+      <% end %>
+    </div>
+  </div>
+
+  <!-- Shared Albums -->
+  <div class="bg-white shadow rounded-lg">
+    <div class="px-4 py-5 sm:p-6">
+      <h3 class="text-lg font-medium text-gray-900 mb-4">Shared Albums (Access)</h3>
+      <% if @user.shared_albums.any? %>
+        <div class="grid grid-cols-1 gap-4 sm:grid-cols-2 lg:grid-cols-3">
+          <% @user.shared_albums.each do |album| %>
+            <% album_user = @user.album_users.find_by(album: album) %>
+            <div class="border border-gray-200 rounded-lg p-4">
+              <div class="flex items-center justify-between mb-2">
+                <h4 class="text-sm font-medium text-gray-900"><%= album.name %></h4>
+                <span class="inline-flex items-center px-2 py-0.5 rounded text-xs font-medium <%= album_user&.can_contribute ? 'bg-blue-100 text-blue-800' : 'bg-gray-100 text-gray-800' %>">
+                  <%= album_user&.can_contribute ? 'Can Contribute' : 'View Only' %>
+                </span>
+              </div>
+              <% if album.description.present? %>
+                <p class="text-sm text-gray-500 mb-2"><%= album.description %></p>
+              <% end %>
+              <div class="text-sm text-gray-500">
+                <%= album.photos.count %> photos
+                &middot; by <%= album.user&.name || album.created_by&.name || 'Unknown' %>
+              </div>
+            </div>
+          <% end %>
+        </div>
+      <% else %>
+        <p class="text-sm text-gray-500">No shared albums</p>
+      <% end %>
+    </div>
+  </div>
+
+  <div class="mt-6">
+    <%= link_to "Back to Users", admin_users_path, class: "text-sm text-blue-600 hover:text-blue-800" %>
+  </div>
+</div>

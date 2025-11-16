@@ -1,0 +1,85 @@
+<div class="min-h-screen flex items-center justify-center py-12 px-4 sm:px-6 lg:px-8 bg-gray-50">
+  <div class="max-w-md w-full">
+    <!-- Logo and Header -->
+    <div class="text-center mb-8">
+      <div class="inline-flex items-center justify-center w-16 h-16 bg-gray-900 rounded-lg mb-4">
+        <svg class="w-10 h-10 text-white" fill="none" stroke="currentColor" viewBox="0 0 24 24">
+          <path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M4 16l4.586-4.586a2 2 0 012.828 0L16 16m-2-2l1.586-1.586a2 2 0 012.828 0L20 14m-6-6h.01M6 20h12a2 2 0 002-2V6a2 2 0 00-2-2H6a2 2 0 00-2 2v12a2 2 0 002 2z"></path>
+        </svg>
+      </div>
+      <h1 class="text-4xl font-bold text-black mb-2">Photonix</h1>
+      <h2 class="text-xl font-medium text-black mb-2">
+        Admin Dashboard
+      </h2>
+      <p class="text-sm text-black">
+        Sign in to manage your photo library
+      </p>
+    </div>
+
+    <!-- Login Form Card -->
+    <div class="bg-white rounded-lg shadow-sm p-8 border border-gray-200">
+      <%= form_with url: admin_login_path, method: :post, class: "space-y-6" do |form| %>
+        <% if flash[:alert] %>
+            <div class="bg-gray-50 border-l-4 border-gray-600 p-4 rounded-lg">
+              <p class="text-sm text-black"><%= flash[:alert] %></p>
+            </div>
+        <% end %>
+
+        <div class="space-y-5">
+          <div>
+            <label for="email" class="block text-sm font-semibold text-black mb-2">
+              Email address
+            </label>
+            <div class="relative">
+              <div class="absolute inset-y-0 left-0 pl-3 flex items-center pointer-events-none">
+                <svg class="h-5 w-5 text-black" fill="none" stroke="currentColor" viewBox="0 0 24 24">
+                  <path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M16 12a4 4 0 10-8 0 4 4 0 008 0zm0 0v1.5a2.5 2.5 0 005 0V12a9 9 0 10-9 9m4.5-1.206a8.959 8.959 0 01-4.5 1.207"></path>
+                </svg>
+              </div>
+              <%= text_field_tag :email, params[:email],
+                  class: "block w-full pl-10 pr-3 py-2 border border-gray-300 rounded-md text-black placeholder-gray-400 focus:outline-none focus:ring-2 focus:ring-gray-500 focus:border-transparent",
+                  placeholder: "admin@photonix.com",
+                  required: true,
+                  autofocus: true %>
+            </div>
+          </div>
+          <div>
+            <label for="password" class="block text-sm font-semibold text-black mb-2">
+              Password
+            </label>
+            <div class="relative">
+              <div class="absolute inset-y-0 left-0 pl-3 flex items-center pointer-events-none">
+                <svg class="h-5 w-5 text-black" fill="none" stroke="currentColor" viewBox="0 0 24 24">
+                  <path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M12 15v2m-6 4h12a2 2 0 002-2v-6a2 2 0 00-2-2H6a2 2 0 00-2 2v6a2 2 0 002 2zm10-10V7a4 4 0 00-8 0v4h8z"></path>
+                </svg>
+              </div>
+              <%= password_field_tag :password, nil,
+                  class: "block w-full pl-10 pr-3 py-2 border border-gray-300 rounded-md text-black placeholder-gray-400 focus:outline-none focus:ring-2 focus:ring-gray-500 focus:border-transparent",
+                  placeholder: "Enter your password",
+                  required: true %>
+            </div>
+          </div>
+        </div>
+
+        <div>
+          <%= submit_tag "Sign in",
+              class: "w-full flex justify-center py-2 px-4 border border-transparent rounded-md text-sm font-medium text-white bg-gray-900 hover:bg-gray-800 focus:outline-none focus:ring-2 focus:ring-offset-2 focus:ring-gray-500" %>
+        </div>
+      <% end %>
+
+      <% unless User.where(role: 'admin').exists? %>
+        <div class="mt-6 pt-6 border-t border-gray-200">
+          <p class="text-center text-sm text-black">
+            No admin account yet?
+            <%= link_to admin_signup_path, class: "font-medium text-black hover:text-gray-700" do %>
+              Create your admin account
+              <svg class="inline-block w-4 h-4 ml-1" fill="none" stroke="currentColor" viewBox="0 0 24 24">
+                <path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M9 5l7 7-7 7"></path>
+              </svg>
+            <% end %>
+          </p>
+        </div>
+      <% end %>
+    </div>
+  </div>
+</div>

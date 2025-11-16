@@ -1,0 +1,95 @@
+<div class="px-4 py-6">
+  <div class="mb-6">
+    <h2 class="text-2xl font-bold text-black">QR Login Code</h2>
+    <p class="mt-1 text-sm text-black">Scan this code with the Photonix mobile app to log in as <%= @user.name %></p>
+  </div>
+
+  <div class="max-w-2xl mx-auto">
+    <div class="bg-white shadow-sm border border-gray-200 rounded-lg overflow-hidden">
+      <div class="px-6 py-8">
+        <!-- QR Code Display -->
+        <div class="flex justify-center mb-6">
+          <div class="bg-white p-8 rounded-lg border-2 border-gray-300">
+            <%= raw RQRCode::QRCode.new(@qr_data).as_svg(
+              offset: 0,
+              color: '000',
+              shape_rendering: 'crispEdges',
+              module_size: 6,
+              standalone: true
+            ) %>
+          </div>
+        </div>
+
+        <!-- User Info -->
+        <div class="text-center mb-6">
+          <h3 class="text-lg font-medium text-black mb-2"><%= @user.name %></h3>
+          <p class="text-sm text-black"><%= @user.email %></p>
+        </div>
+
+        <!-- Token Info -->
+        <div class="bg-gray-50 rounded-lg p-4 mb-6">
+          <div class="grid grid-cols-1 gap-4 sm:grid-cols-2">
+            <div>
+              <dt class="text-xs font-medium text-black uppercase">Token ID</dt>
+              <dd class="mt-1 text-sm text-black font-mono"><%= @login_token.token.first(8) %>...</dd>
+            </div>
+            <div>
+              <dt class="text-xs font-medium text-black uppercase">Expires At</dt>
+              <dd class="mt-1 text-sm text-black"><%= @login_token.expires_at.strftime("%I:%M %p") %></dd>
+            </div>
+            <div>
+              <dt class="text-xs font-medium text-black uppercase">Server URL</dt>
+              <dd class="mt-1 text-sm text-black break-all"><%= @base_url %></dd>
+            </div>
+            <div>
+              <dt class="text-xs font-medium text-black uppercase">Status</dt>
+              <dd class="mt-1">
+                <span class="inline-flex items-center px-2.5 py-0.5 rounded-full text-xs font-medium bg-gray-100 text-black">
+                  Active
+                </span>
+              </dd>
+            </div>
+          </div>
+        </div>
+
+        <!-- Instructions -->
+        <div class="bg-gray-50 border-l-4 border-gray-400 p-4 mb-6 rounded-lg">
+          <div class="flex">
+            <div class="ml-3">
+              <h3 class="text-sm font-medium text-black">Instructions</h3>
+              <div class="mt-2 text-sm text-black">
+                <ol class="list-decimal pl-5 space-y-1">
+                  <li>Open the Photonix mobile app</li>
+                  <li>Tap "Login with QR Code"</li>
+                  <li>Scan this QR code</li>
+                  <li>You'll be automatically logged in</li>
+                </ol>
+              </div>
+            </div>
+          </div>
+        </div>
+
+        <!-- Warning -->
+        <div class="bg-gray-50 border-l-4 border-gray-600 p-4 mb-6 rounded-lg">
+          <div class="flex">
+            <div class="ml-3">
+              <h3 class="text-sm font-medium text-black">Security Notice</h3>
+              <div class="mt-2 text-sm text-black">
+                <p>This QR code will expire in 5 minutes. Do not share this code with anyone. It provides immediate access to <%= @user.name %>'s account.</p>
+              </div>
+            </div>
+          </div>
+        </div>
+
+        <!-- Actions -->
+        <div class="flex justify-between space-x-3">
+          <%= link_to "Back", admin_qr_logins_path, class: "inline-flex items-center px-4 py-2 border border-gray-300 text-sm font-medium rounded-md shadow-sm text-black bg-white hover:bg-gray-50 focus:outline-none focus:ring-2 focus:ring-offset-2 focus:ring-gray-500" %>
+          <%= button_to "Generate New Code",
+              admin_qr_logins_path(user_id: @user.id),
+              method: :post,
+              class: "inline-flex items-center px-4 py-2 border border-transparent text-sm font-medium rounded-md shadow-sm text-white bg-gray-900 hover:bg-gray-800 focus:outline-none focus:ring-2 focus:ring-offset-2 focus:ring-gray-500" %>
+        </div>
+      </div>
+    </div>
+  </div>
+</div>

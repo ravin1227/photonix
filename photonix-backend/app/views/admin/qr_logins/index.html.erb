@@ -1,0 +1,236 @@
+<div class="px-4 py-6">
+  <div class="mb-6">
+    <h2 class="text-2xl font-bold text-black">QR Login Generator</h2>
+    <p class="mt-1 text-sm text-black">Generate QR codes for mobile app login</p>
+  </div>
+
+  <div class="bg-white shadow-sm border border-gray-200 rounded-lg">
+    <div class="px-6 py-6">
+      <h3 class="text-lg font-semibold text-black mb-4">Select a user to generate QR code</h3>
+
+      <% if @users.any? %>
+        <%= form_with url: admin_qr_logins_path, method: :post, local: true, class: "space-y-4" do |form| %>
+          <div class="relative">
+            <label for="user_search" class="block text-sm font-medium text-black mb-2">
+              Search and select user
+            </label>
+            <div class="relative">
+              <input
+                type="text"
+                id="user_search"
+                placeholder="Type to search users..."
+                class="block w-full pl-10 pr-3 py-2 border border-gray-300 rounded-md text-black placeholder-gray-400 focus:outline-none focus:ring-2 focus:ring-gray-500 focus:border-transparent"
+                autocomplete="off"
+              />
+              <div class="absolute inset-y-0 left-0 pl-3 flex items-center pointer-events-none">
+                <svg class="h-5 w-5 text-black" fill="none" stroke="currentColor" viewBox="0 0 24 24">
+                  <path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M21 21l-6-6m2-5a7 7 0 11-14 0 7 7 0 0114 0z"></path>
+                </svg>
+              </div>
+            </div>
+            <select
+              name="user_id"
+              id="user_select"
+              required
+              class="mt-2 block w-full pl-3 pr-10 py-2 border border-gray-300 rounded-md text-black focus:outline-none focus:ring-2 focus:ring-gray-500 focus:border-transparent"
+              style="display: none;"
+            >
+              <option value="">-- Select a user --</option>
+              <% @users.each do |user| %>
+                <option value="<%= user.id %>" data-name="<%= user.name %>" data-email="<%= user.email %>">
+                  <%= user.name %> (<%= user.email %>)
+                </option>
+              <% end %>
+            </select>
+            <div id="user_dropdown" class="mt-1 hidden absolute z-10 w-full bg-white border border-gray-300 rounded-md shadow-lg max-h-60 overflow-auto"></div>
+            <p id="selection_hint" class="mt-1 text-xs text-black">Click on a user from the dropdown or press Enter to select</p>
+          </div>
+
+          <div id="selected_user_info" class="hidden p-4 bg-gray-50 rounded-lg border border-gray-200 mb-4">
+            <div class="flex items-center justify-between">
+              <div>
+                <p class="text-sm font-medium text-black" id="selected_user_name"></p>
+                <p class="text-xs text-black mt-1" id="selected_user_email"></p>
+              </div>
+            </div>
+          </div>
+
+          <div>
+            <button type="submit" 
+                class="w-full inline-flex justify-center items-center px-4 py-2 border border-transparent text-sm font-medium rounded-md text-white bg-gray-900 hover:bg-gray-800 focus:outline-none focus:ring-2 focus:ring-offset-2 focus:ring-gray-500 disabled:opacity-50 disabled:cursor-not-allowed disabled:bg-gray-400"
+                id="generate_button"
+                disabled>
+              <span id="button_text">Generate QR Code</span>
+              <span id="button_spinner" class="hidden ml-2">
+                <svg class="animate-spin h-5 w-5 text-white" xmlns="http://www.w3.org/2000/svg" fill="none" viewBox="0 0 24 24">
+                  <circle class="opacity-25" cx="12" cy="12" r="10" stroke="currentColor" stroke-width="4"></circle>
+                  <path class="opacity-75" fill="currentColor" d="M4 12a8 8 0 018-8V0C5.373 0 0 5.373 0 12h4m2 5.291A7.962 7.962 0 014 12H0c0 3.042 1.135 5.824 3 7.938l3-2.647z"></path>
+                </svg>
+              </span>
+            </button>
+          </div>
+        <% end %>
+      <% else %>
+        <div class="text-center py-12">
+          <p class="text-sm text-black mb-4">No regular users found. Create a user first.</p>
+          <%= link_to "Create User", new_admin_user_path, class: "inline-flex items-center px-4 py-2 border border-transparent text-sm font-medium rounded-md text-white bg-gray-900 hover:bg-gray-800 focus:outline-none focus:ring-2 focus:ring-offset-2 focus:ring-gray-500" %>
+        </div>
+      <% end %>
+    </div>
+  </div>
+
+  <div class="mt-6 bg-gray-50 border-l-4 border-gray-400 p-4 rounded-lg">
+    <div class="flex">
+      <div class="ml-3">
+        <h3 class="text-sm font-medium text-black">How QR Login Works</h3>
+        <div class="mt-2 text-sm text-black">
+          <ul class="list-disc pl-5 space-y-1">
+            <li>Generate a QR code for a user</li>
+            <li>User scans the QR code with their mobile app</li>
+            <li>They are automatically logged in without entering credentials</li>
+            <li>QR codes expire after 5 minutes for security</li>
+          </ul>
+        </div>
+      </div>
+    </div>
+  </div>
+</div>
+
+<script>
+  (function() {
+    const userSearch = document.getElementById('user_search');
+    const userSelect = document.getElementById('user_select');
+    const userDropdown = document.getElementById('user_dropdown');
+    const selectedUserInfo = document.getElementById('selected_user_info');
+    const selectedUserName = document.getElementById('selected_user_name');
+    const selectedUserEmail = document.getElementById('selected_user_email');
+    const generateButton = document.getElementById('generate_button');
+    const buttonText = document.getElementById('button_text');
+    const buttonSpinner = document.getElementById('button_spinner');
+    const selectionHint = document.getElementById('selection_hint');
+    const form = document.querySelector('form');
+    const userOptions = Array.from(userSelect.options).slice(1); // Skip first empty option
+
+    if (!userSearch || !userSelect) return;
+
+    let selectedUserId = null;
+
+    // Function to select a user
+    function selectUser(userId, name, email) {
+      selectedUserId = userId;
+      userSelect.value = userId;
+      userSearch.value = name;
+      userDropdown.classList.add('hidden');
+      
+      selectedUserName.textContent = name;
+      selectedUserEmail.textContent = email;
+      selectedUserInfo.classList.remove('hidden');
+      
+      // Hide the hint text
+      if (selectionHint) {
+        selectionHint.classList.add('hidden');
+      }
+      
+      // Enable the generate button
+      if (generateButton) {
+        generateButton.disabled = false;
+      }
+    }
+
+    userSearch.addEventListener('input', function(e) {
+      const searchTerm = e.target.value.toLowerCase().trim();
+      
+      if (searchTerm === '') {
+        userDropdown.classList.add('hidden');
+        return;
+      }
+
+      const filtered = userOptions.filter(option => {
+        const text = option.textContent.toLowerCase();
+        return text.includes(searchTerm);
+      });
+
+      if (filtered.length === 0) {
+        userDropdown.innerHTML = '<div class="px-4 py-2 text-sm text-black">No users found</div>';
+        userDropdown.classList.remove('hidden');
+        return;
+      }
+
+      userDropdown.innerHTML = filtered.map(option => {
+        const userId = option.value;
+        const name = option.dataset.name;
+        const email = option.dataset.email;
+        return `
+          <div class="px-4 py-2 hover:bg-gray-100 cursor-pointer border-b border-gray-100 last:border-b-0" data-user-id="${userId}" data-name="${name}" data-email="${email}">
+            <p class="text-sm font-medium text-black">${name}</p>
+            <p class="text-xs text-black">${email}</p>
+          </div>
+        `;
+      }).join('');
+
+      userDropdown.classList.remove('hidden');
+
+      // Add click handlers to dropdown items
+      userDropdown.querySelectorAll('[data-user-id]').forEach(item => {
+        item.addEventListener('click', function() {
+          selectUser(this.dataset.userId, this.dataset.name, this.dataset.email);
+        });
+      });
+    });
+
+    // Allow Enter key to select first result
+    userSearch.addEventListener('keydown', function(e) {
+      if (e.key === 'Enter') {
+        e.preventDefault();
+        const firstResult = userDropdown.querySelector('[data-user-id]');
+        if (firstResult) {
+          selectUser(firstResult.dataset.userId, firstResult.dataset.name, firstResult.dataset.email);
+        }
+      }
+    });
+
+    // Hide dropdown when clicking outside
+    document.addEventListener('click', function(e) {
+      if (!userSearch.contains(e.target) && !userDropdown.contains(e.target)) {
+        userDropdown.classList.add('hidden');
+      }
+    });
+
+    // Clear selection when search is cleared
+    userSearch.addEventListener('focus', function() {
+      if (this.value === '') {
+        selectedUserId = null;
+        userSelect.value = '';
+        selectedUserInfo.classList.add('hidden');
+        if (selectionHint) {
+          selectionHint.classList.remove('hidden');
+        }
+        if (generateButton) {
+          generateButton.disabled = true;
+        }
+      }
+    });
+
+    // Handle form submission to show loading state
+    if (form) {
+      form.addEventListener('submit', function(e) {
+        // Only show loading if form is valid (user is selected)
+        if (userSelect.value && userSelect.value !== '') {
+          if (generateButton) {
+            generateButton.disabled = true;
+          }
+          if (buttonText) {
+            buttonText.textContent = 'Generating...';
+          }
+          if (buttonSpinner) {
+            buttonSpinner.classList.remove('hidden');
+          }
+          // Disable search input during submission
+          if (userSearch) {
+            userSearch.disabled = true;
+          }
+        }
+      });
+    }
+  })();
+</script>

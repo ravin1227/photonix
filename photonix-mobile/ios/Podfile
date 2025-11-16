@@ -1,0 +1,65 @@
+# Resolve react_native_pods.rb with node to allow for hoisting
+require Pod::Executable.execute_command('node', ['-p',
+  'require.resolve(
+    "react-native/scripts/react_native_pods.rb",
+    {paths: [process.argv[1]]},
+  )', __dir__]).strip
+
+platform :ios, min_ios_version_supported
+prepare_react_native_project!
+
+# React Native 0.82+ requires New Architecture - cannot disable
+
+linkage = ENV['USE_FRAMEWORKS']
+if linkage != nil
+  Pod::UI.puts "Configuring Pod with #{linkage}ally linked Frameworks".green
+  use_frameworks! :linkage => linkage.to_sym
+end
+
+target 'PhotonixMobile' do
+  config = use_native_modules!
+
+  # Explicitly include react-native-worklets for react-native-reanimated
+  pod 'RNWorklets', :path => '../node_modules/react-native-worklets'
+
+  use_react_native!(
+    :path => config[:reactNativePath],
+    # An absolute path to your application root.
+    :app_path => "#{Pod::Config.instance.installation_root}/.."
+  )
+
+  post_install do |installer|
+    react_native_post_install(
+      installer,
+      config[:reactNativePath],
+      :mac_catalyst_enabled => false,
+      # :ccache_enabled => true
+    )
+    
+    # Fix RNWorklets compilation issues
+    installer.pods_project.targets.each do |target|
+      if target.name == 'RNWorklets'
+        target.build_configurations.each do |config|
+          config.build_settings['CLANG_CXX_LANGUAGE_STANDARD'] = 'c++20'
+          config.build_settings['CLANG_CXX_LIBRARY'] = 'libc++'
+          # Add header search paths - use PODS_TARGET_SRCROOT for local headers
+          config.build_settings['HEADER_SEARCH_PATHS'] ||= ['$(inherited)']
+          config.build_settings['HEADER_SEARCH_PATHS'] << '"$(PODS_TARGET_SRCROOT)/Common/cpp/worklets"'
+          config.build_settings['HEADER_SEARCH_PATHS'] << '"$(PODS_TARGET_SRCROOT)/apple/worklets/apple"'
+          config.build_settings['HEADER_SEARCH_PATHS'] << '"$(PODS_ROOT)/Headers/Private/RNWorklets"'
+          config.build_settings['HEADER_SEARCH_PATHS'] << '"$(PODS_ROOT)/Headers/Public/RNWorklets"'
+          # Add codegen generated headers path
+          config.build_settings['HEADER_SEARCH_PATHS'] << '"$(SRCROOT)/../build/generated/ios"'
+          # Create symlink for rnworklets header if needed
+          codegen_header = File.join(installer.sandbox.root, '../../build/generated/ios/rnworklets/rnworklets.h')
+          umbrella_header = File.join(installer.sandbox.root, 'Headers/Public/RNWorklets/rnworklets/rnworklets.h')
+          umbrella_dir = File.dirname(umbrella_header)
+          if File.exist?(codegen_header) && !File.exist?(umbrella_header)
+            FileUtils.mkdir_p(umbrella_dir)
+            FileUtils.symlink(File.expand_path(codegen_header), umbrella_header)
+          end
+        end
+      end
+    end
+  end
+end

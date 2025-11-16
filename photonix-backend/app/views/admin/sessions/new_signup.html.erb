@@ -1,0 +1,91 @@
+<div class="min-h-screen flex items-center justify-center py-12 px-4 sm:px-6 lg:px-8">
+  <div class="max-w-md w-full space-y-8">
+    <div>
+      <h1 class="text-center text-4xl font-extrabold text-blue-600">Photonix</h1>
+      <h2 class="mt-6 text-center text-3xl font-bold text-gray-900">
+        First-Time Setup
+      </h2>
+      <p class="mt-2 text-center text-sm text-gray-600">
+        Create your admin account to get started
+      </p>
+    </div>
+
+    <%= form_with model: @user ||= User.new, url: admin_signup_path, method: :post, class: "mt-8 space-y-6" do |form| %>
+      <% if @user&.errors&.any? %>
+        <div class="rounded-md bg-red-50 p-4">
+          <div class="flex">
+            <div class="ml-3">
+              <h3 class="text-sm font-medium text-red-800">
+                <%= pluralize(@user.errors.count, "error") %> prohibited this account from being created:
+              </h3>
+              <div class="mt-2 text-sm text-red-700">
+                <ul class="list-disc pl-5 space-y-1">
+                  <% @user.errors.full_messages.each do |message| %>
+                    <li><%= message %></li>
+                  <% end %>
+                </ul>
+              </div>
+            </div>
+          </div>
+        </div>
+      <% end %>
+
+      <div class="rounded-md shadow-sm space-y-4">
+        <div>
+          <label for="user_name" class="block text-sm font-medium text-gray-700">Full Name</label>
+          <%= form.text_field :name,
+              class: "mt-1 appearance-none relative block w-full px-3 py-2 border border-gray-300 placeholder-gray-500 text-gray-900 rounded-md focus:outline-none focus:ring-blue-500 focus:border-blue-500 focus:z-10 sm:text-sm",
+              placeholder: "John Doe",
+              required: true,
+              autofocus: true %>
+        </div>
+
+        <div>
+          <label for="user_email" class="block text-sm font-medium text-gray-700">Email address</label>
+          <%= form.email_field :email,
+              class: "mt-1 appearance-none relative block w-full px-3 py-2 border border-gray-300 placeholder-gray-500 text-gray-900 rounded-md focus:outline-none focus:ring-blue-500 focus:border-blue-500 focus:z-10 sm:text-sm",
+              placeholder: "admin@photonix.com",
+              required: true %>
+        </div>
+
+        <div>
+          <label for="user_password" class="block text-sm font-medium text-gray-700">Password</label>
+          <%= form.password_field :password,
+              class: "mt-1 appearance-none relative block w-full px-3 py-2 border border-gray-300 placeholder-gray-500 text-gray-900 rounded-md focus:outline-none focus:ring-blue-500 focus:border-blue-500 focus:z-10 sm:text-sm",
+              placeholder: "Minimum 6 characters",
+              required: true %>
+        </div>
+
+        <div>
+          <label for="user_password_confirmation" class="block text-sm font-medium text-gray-700">Confirm Password</label>
+          <%= form.password_field :password_confirmation,
+              class: "mt-1 appearance-none relative block w-full px-3 py-2 border border-gray-300 placeholder-gray-500 text-gray-900 rounded-md focus:outline-none focus:ring-blue-500 focus:border-blue-500 focus:z-10 sm:text-sm",
+              placeholder: "Re-enter password",
+              required: true %>
+        </div>
+      </div>
+
+      <div class="bg-blue-50 border-l-4 border-blue-400 p-4">
+        <div class="flex">
+          <div class="ml-3">
+            <p class="text-sm text-blue-700">
+              This will create your admin account with full access to the Photonix system. You can create additional users later from the dashboard.
+            </p>
+          </div>
+        </div>
+      </div>
+
+      <div>
+        <%= form.submit "Create Admin Account",
+            class: "group relative w-full flex justify-center py-2 px-4 border border-transparent text-sm font-medium rounded-md text-white bg-blue-600 hover:bg-blue-700 focus:outline-none focus:ring-2 focus:ring-offset-2 focus:ring-blue-500" %>
+      </div>
+    <% end %>
+
+    <div class="text-center">
+      <p class="text-sm text-gray-600">
+        Already have an account?
+        <%= link_to "Sign in", admin_login_path, class: "font-medium text-blue-600 hover:text-blue-500" %>
+      </p>
+    </div>
+  </div>
+</div>

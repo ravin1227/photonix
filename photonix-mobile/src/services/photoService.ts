@@ -14,6 +14,11 @@ export interface Photo {
     medium?: string;
     large?: string;
   };
+  uploaded_by: {
+    id: number;
+    name: string;
+  };
+  is_mine: boolean;
   created_at: string;
 }
 

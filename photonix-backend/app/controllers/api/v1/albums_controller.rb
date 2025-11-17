@@ -101,28 +101,19 @@ module Api
         end
 
         photo = photo_album.photo
-        is_owner = @album.user_id == current_user.id || @album.created_by_id == current_user.id
         is_photo_owner = photo.user_id == current_user.id
 
-        # Check if user is a contributor (has can_contribute permission)
-        album_user = @album.album_users.find_by(user_id: current_user.id)
-        is_contributor = album_user&.can_contribute || false
+        # NEW PERMISSION LOGIC:
+        # - Users can ONLY delete their OWN photos
+        # - Album owner CANNOT delete photos uploaded by others
+        # - Contributors can ONLY delete their own photos
+        # - This ensures everyone owns their content
 
-        # Permission check:
-        # - Album owner can delete ANY photo
-        # - Contributors can only delete THEIR OWN photos
-        # - Viewers cannot delete ANY photos
-        can_delete = is_owner || (is_contributor && is_photo_owner)
-
-        if can_delete
+        if is_photo_owner
           photo_album.destroy
           render json: { message: 'Photo removed from album' }
         else
-          if is_photo_owner && !is_contributor
-            render json: { error: 'You need contributor permission to delete photos' }, status: :forbidden
-          else
-            render json: { error: 'You can only remove photos you uploaded' }, status: :forbidden
-          end
+          render json: { error: 'You can only remove photos you uploaded' }, status: :forbidden
         end
       end
 
@@ -217,7 +208,13 @@ module Api
           id: photo.id,
           original_filename: photo.original_filename,
           thumbnail_url: "#{request.protocol}#{request.host_with_port}/api/v1/photos/#{photo.id}/thumbnail/small",
-          captured_at: photo.captured_at
+          captured_at: photo.captured_at,
+          uploaded_by: {
+            id: photo.user_id,
+            name: photo.user.name
+          },
+          is_mine: photo.user_id == current_user.id,  # Frontend can use this to show/hide delete icon
+          can_delete: photo.user_id == current_user.id  # Only owner of photo can delete it
         }
       end
 
@@ -238,8 +235,8 @@ module Api
           can_view: is_owner || album_user&.can_view || false,
           can_add_photos: is_owner || album_user&.can_contribute || false,
           can_delete_album: is_owner,
-          can_delete_own_photos: is_owner || album_user&.can_contribute || false,
-          can_delete_any_photos: is_owner,
+          can_delete_own_photos: true,  # Everyone can delete their own photos
+          can_delete_others_photos: false,  # NEW: No one can delete others' photos (not even owner)
           can_share: is_owner
         }
       end

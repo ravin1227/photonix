@@ -1,4 +1,4 @@
-import React, {useState, useEffect} from 'react';
+import React, {useState, useEffect, useRef} from 'react';
 import {
   View,
   Text,
@@ -9,6 +9,8 @@ import {
   RefreshControl,
   Modal,
   Alert,
+  PanResponder,
+  Animated,
 } from 'react-native';
 import {SafeAreaView, useSafeAreaInsets} from 'react-native-safe-area-context';
 import {useRoute, useNavigation, RouteProp} from '@react-navigation/native';
@@ -60,9 +62,15 @@ export default function AlbumDetailScreen() {
     can_add_photos: false,
     can_delete_album: false,
     can_delete_own_photos: false,
-    can_delete_any_photos: false,
+    can_delete_others_photos: false,  // Updated field name
     can_share: false,
   });
+
+  // Multi-select state
+  const [isSelectionMode, setIsSelectionMode] = useState(false);
+  const [selectedPhotoIds, setSelectedPhotoIds] = useState<Set<number>>(new Set());
+  const [isDraggingToSelect, setIsDraggingToSelect] = useState(false);
+  const photoPositionsRef = useRef<Map<number, {x: number; y: number; width: number; height: number}>>(new Map());
 
   useEffect(() => {
     loadPhotos();
@@ -205,11 +213,41 @@ export default function AlbumDetailScreen() {
     return `${baseUrl}${url}`;
   };
 
+  const handleDeletePhoto = async (photoId: number) => {
+    Alert.alert(
+      'Remove Photo',
+      'Are you sure you want to remove this photo from the album?',
+      [
+        {text: 'Cancel', style: 'cancel'},
+        {
+          text: 'Remove',
+          style: 'destructive',
+          onPress: async () => {
+            try {
+              const response = await albumService.removePhotoFromAlbum(albumId, photoId);
+
+              if (response.error) {
+                Alert.alert('Error', response.error || 'Failed to remove photo');
+                return;
+              }
+
+              // Refresh photos
+              await loadPhotos(1);
+              Alert.alert('Success', 'Photo removed from album');
+            } catch (error: any) {
+              Alert.alert('Error', error.message || 'Failed to remove photo');
+            }
+          },
+        },
+      ],
+    );
+  };
+
   const handleDeleteAlbum = async () => {
     try {
       setIsDeleting(true);
       const response = await albumService.deleteAlbum(albumId);
-      
+
       if (response.error) {
         Alert.alert('Error', response.error);
         setIsDeleting(false);
@@ -220,7 +258,7 @@ export default function AlbumDetailScreen() {
       // Check navigation state to determine which navigator we're in
       const state = navigation.getState();
       const routeNames = state.routes.map(route => route.name);
-      
+
       // If AlbumsList exists in the navigation state, we're in AlbumsStackNavigator
       if (routeNames.includes('AlbumsList')) {
         navigation.navigate('AlbumsList' as never, {deletedAlbumId: albumId} as never);
@@ -236,6 +274,134 @@ export default function AlbumDetailScreen() {
     }
   };
 
+  // Multi-select handlers
+  const handleLongPress = (photoId: number, photo: AlbumPhoto) => {
+    // Only allow selection of owned photos
+    if (!photo.is_mine) {
+      Alert.alert('Cannot Select', 'You can only select photos you uploaded');
+      return;
+    }
+
+    // Enter selection mode
+    setIsSelectionMode(true);
+    const newSelection = new Set<number>();
+    newSelection.add(photoId);
+    setSelectedPhotoIds(newSelection);
+  };
+
+  const handlePhotoSelection = (photoId: number, photo: AlbumPhoto) => {
+    if (!isSelectionMode) return;
+
+    // Only allow selection of owned photos
+    if (!photo.is_mine) return;
+
+    setSelectedPhotoIds(prev => {
+      const newSet = new Set(prev);
+      if (newSet.has(photoId)) {
+        newSet.delete(photoId);
+      } else {
+        newSet.add(photoId);
+      }
+      return newSet;
+    });
+  };
+
+  const exitSelectionMode = () => {
+    setIsSelectionMode(false);
+    setSelectedPhotoIds(new Set());
+    setIsDraggingToSelect(false);
+  };
+
+  const handleBatchDelete = async () => {
+    if (selectedPhotoIds.size === 0) return;
+
+    Alert.alert(
+      'Remove Photos',
+      `Are you sure you want to remove ${selectedPhotoIds.size} photo(s) from the album?`,
+      [
+        {text: 'Cancel', style: 'cancel'},
+        {
+          text: 'Remove',
+          style: 'destructive',
+          onPress: async () => {
+            try {
+              // Delete each selected photo
+              const deletePromises = Array.from(selectedPhotoIds).map(photoId =>
+                albumService.removePhotoFromAlbum(albumId, photoId)
+              );
+
+              const results = await Promise.all(deletePromises);
+
+              // Check for errors
+              const errors = results.filter(r => r.error);
+              if (errors.length > 0) {
+                Alert.alert('Error', `Failed to remove ${errors.length} photo(s)`);
+              } else {
+                Alert.alert('Success', `Removed ${selectedPhotoIds.size} photo(s) from album`);
+              }
+
+              // Exit selection mode and refresh
+              exitSelectionMode();
+              await loadPhotos(1);
+            } catch (error: any) {
+              Alert.alert('Error', error.message || 'Failed to remove photos');
+            }
+          },
+        },
+      ],
+    );
+  };
+
+  const checkPhotoIntersection = (x: number, y: number): number | null => {
+    for (const [photoId, pos] of photoPositionsRef.current.entries()) {
+      if (
+        x >= pos.x &&
+        x <= pos.x + pos.width &&
+        y >= pos.y &&
+        y <= pos.y + pos.height
+      ) {
+        return photoId;
+      }
+    }
+    return null;
+  };
+
+  // PanResponder for drag-to-select
+  const panResponder = useRef(
+    PanResponder.create({
+      onStartShouldSetPanResponder: () => isSelectionMode,
+      onMoveShouldSetPanResponder: () => isSelectionMode,
+      onPanResponderGrant: () => {
+        if (isSelectionMode) {
+          setIsDraggingToSelect(true);
+        }
+      },
+      onPanResponderMove: (evt, gestureState) => {
+        if (!isSelectionMode) return;
+
+        const {pageX, pageY} = evt.nativeEvent;
+        const photoId = checkPhotoIntersection(pageX, pageY);
+
+        if (photoId !== null) {
+          const photo = photos.find(p => p.id === photoId);
+          if (photo && photo.is_mine) {
+            setSelectedPhotoIds(prev => {
+              const newSet = new Set(prev);
+              newSet.add(photoId);
+              return newSet;
+            });
+          }
+        }
+      },
+      onPanResponderRelease: () => {
+        setIsDraggingToSelect(false);
+      },
+      onPanResponderTerminate: () => {
+        setIsDraggingToSelect(false);
+      },
+    })
+  ).current;
+
   if (isLoading && photos.length === 0) {
     return (
       <SafeAreaView style={styles.container} edges={['top']}>
@@ -249,12 +415,17 @@ export default function AlbumDetailScreen() {
           <Text style={styles.title} numberOfLines={1}>
             {albumName}
           </Text>
-          <TouchableOpacity
-            style={styles.deleteButton}
-            onPress={() => setShowDeleteModal(true)}
-            hitSlop={{top: 10, bottom: 10, left: 10, right: 10}}>
-            <Icon name="trash-outline" size={24} color="#ff3040" />
-          </TouchableOpacity>
+          {/* Only show delete button if user can delete album */}
+          {permissions.can_delete_album ? (
+            <TouchableOpacity
+              style={styles.deleteButton}
+              onPress={() => setShowDeleteModal(true)}
+              hitSlop={{top: 10, bottom: 10, left: 10, right: 10}}>
+              <Icon name="trash-outline" size={24} color="#ff3040" />
+            </TouchableOpacity>
+          ) : (
+            <View style={styles.deleteButton} />
+          )}
         </View>
         <View style={styles.loadingContainer}>
           <ActivityIndicator size="large" color="#000000" />
@@ -361,27 +532,71 @@ export default function AlbumDetailScreen() {
             </Text>
           </View>
         ) : (
-          <View style={styles.grid}>
+          <View style={styles.grid} {...panResponder.panHandlers}>
             {photos.map(photo => {
               const thumbnailUrl = getThumbnailUrl(photo);
+              const isSelected = selectedPhotoIds.has(photo.id);
               return (
-                <TouchableOpacity
+                <View
                   key={photo.id}
-                  style={styles.photoThumbnail}
-                  onPress={() => handlePhotoPress(photo.id)}
-                  activeOpacity={0.8}>
-                  {thumbnailUrl ? (
-                    <AuthImage
-                      source={{uri: thumbnailUrl}}
-                      style={styles.photoImage}
-                      resizeMode="cover"
-                    />
-                  ) : (
-                    <View style={styles.photoPlaceholder}>
-                      <Icon name="ban" size={32} color="#999999" />
-                    </View>
-                  )}
-                </TouchableOpacity>
+                  style={styles.photoContainer}
+                  onLayout={(event) => {
+                    const {x, y, width, height} = event.nativeEvent.layout;
+                    photoPositionsRef.current.set(photo.id, {x, y, width, height});
+                  }}>
+                  <TouchableOpacity
+                    style={styles.photoThumbnail}
+                    onPress={() => {
+                      if (isSelectionMode) {
+                        handlePhotoSelection(photo.id, photo);
+                      } else {
+                        handlePhotoPress(photo.id);
+                      }
+                    }}
+                    onLongPress={() => handleLongPress(photo.id, photo)}
+                    activeOpacity={0.8}>
+                    {thumbnailUrl ? (
+                      <AuthImage
+                        source={{uri: thumbnailUrl}}
+                        style={styles.photoImage}
+                        resizeMode="cover"
+                      />
+                    ) : (
+                      <View style={styles.photoPlaceholder}>
+                        <Icon name="ban" size={32} color="#999999" />
+                      </View>
+                    )}
+
+                    {/* Selection overlay */}
+                    {isSelectionMode && (
+                      <View style={[
+                        styles.selectionOverlay,
+                        isSelected && styles.selectionOverlaySelected,
+                        !photo.is_mine && styles.selectionOverlayDisabled
+                      ]}>
+                        {photo.is_mine && (
+                          <View style={[
+                            styles.selectionCheckbox,
+                            isSelected && styles.selectionCheckboxSelected
+                          ]}>
+                            {isSelected && (
+                              <Icon name="checkmark" size={16} color="#ffffff" />
+                            )}
+                          </View>
+                        )}
+                      </View>
+                    )}
+
+                    {/* Show uploader name if not mine */}
+                    {!photo.is_mine && !isSelectionMode && (
+                      <View style={styles.uploaderBadge}>
+                        <Text style={styles.uploaderText} numberOfLines={1}>
+                          {photo.uploaded_by.name}
+                        </Text>
+                      </View>
+                    )}
+                  </TouchableOpacity>
+                </View>
               );
             })}
           </View>
@@ -393,13 +608,48 @@ export default function AlbumDetailScreen() {
         )}
         </ScrollView>
 
-      {/* Floating Action Button */}
-      <TouchableOpacity
-        style={styles.fab}
-        onPress={handleOpenAddPhotosModal}
-        activeOpacity={0.8}>
-        <Icon name="add" size={28} color="#ffffff" />
-      </TouchableOpacity>
+      {/* Floating Action Button - Only show if user can add photos and not in selection mode */}
+      {permissions.can_add_photos && !isSelectionMode && (
+        <TouchableOpacity
+          style={styles.fab}
+          onPress={handleOpenAddPhotosModal}
+          activeOpacity={0.8}>
+          <Icon name="add" size={28} color="#ffffff" />
+        </TouchableOpacity>
+      )}
+
+      {/* Selection Mode Bottom Bar */}
+      {isSelectionMode && (
+        <View style={[styles.selectionBar, {paddingBottom: insets.bottom || 20}]}>
+          <View style={styles.selectionBarContent}>
+            <TouchableOpacity
+              style={styles.selectionBarCancelButton}
+              onPress={exitSelectionMode}>
+              <Text style={styles.selectionBarCancelText}>Cancel</Text>
+            </TouchableOpacity>
+
+            <Text style={styles.selectionBarCount}>
+              {selectedPhotoIds.size} selected
+            </Text>
+
+            <TouchableOpacity
+              style={[
+                styles.selectionBarDeleteButton,
+                selectedPhotoIds.size === 0 && styles.selectionBarDeleteButtonDisabled
+              ]}
+              onPress={handleBatchDelete}
+              disabled={selectedPhotoIds.size === 0}>
+              <Icon name="trash-outline" size={20} color={selectedPhotoIds.size > 0 ? "#ffffff" : "#999999"} />
+              <Text style={[
+                styles.selectionBarDeleteText,
+                selectedPhotoIds.size === 0 && styles.selectionBarDeleteTextDisabled
+              ]}>
+                Delete
+              </Text>
+            </TouchableOpacity>
+          </View>
+        </View>
+      )}
 
       {/* Add Photos Modal */}
       <Modal
@@ -588,13 +838,48 @@ const styles = StyleSheet.create({
     flexWrap: 'wrap',
     gap: 4,
   },
-  photoThumbnail: {
+  photoContainer: {
     width: '32%',
-    aspectRatio: 1,
     marginBottom: 4,
+    position: 'relative',
+  },
+  photoThumbnail: {
+    width: '100%',
+    aspectRatio: 1,
     flexShrink: 0,
     flexGrow: 0,
     overflow: 'hidden',
+    position: 'relative',
+  },
+  uploaderBadge: {
+    position: 'absolute',
+    bottom: 0,
+    left: 0,
+    right: 0,
+    backgroundColor: 'rgba(0, 0, 0, 0.6)',
+    paddingHorizontal: 4,
+    paddingVertical: 2,
+  },
+  uploaderText: {
+    color: '#ffffff',
+    fontSize: 10,
+    fontWeight: '500',
+  },
+  deletePhotoButton: {
+    position: 'absolute',
+    top: 4,
+    right: 4,
+    backgroundColor: 'rgba(255, 255, 255, 0.9)',
+    borderRadius: 12,
+    width: 24,
+    height: 24,
+    justifyContent: 'center',
+    alignItems: 'center',
+    shadowColor: '#000',
+    shadowOffset: {width: 0, height: 1},
+    shadowOpacity: 0.2,
+    shadowRadius: 2,
+    elevation: 2,
   },
   photoImage: {
     width: '100%',
@@ -838,6 +1123,96 @@ const styles = StyleSheet.create({
     backgroundColor: '#000000',
     justifyContent: 'center',
     alignItems: 'center',
+  },
+  // Multi-select styles
+  selectionOverlay: {
+    position: 'absolute',
+    top: 0,
+    left: 0,
+    right: 0,
+    bottom: 0,
+    backgroundColor: 'rgba(0, 0, 0, 0.2)',
+    justifyContent: 'center',
+    alignItems: 'center',
+  },
+  selectionOverlaySelected: {
+    backgroundColor: 'rgba(0, 122, 255, 0.3)',
+    borderWidth: 2,
+    borderColor: '#007AFF',
+  },
+  selectionOverlayDisabled: {
+    backgroundColor: 'rgba(150, 150, 150, 0.2)',
+  },
+  selectionCheckbox: {
+    width: 24,
+    height: 24,
+    borderRadius: 12,
+    borderWidth: 2,
+    borderColor: '#ffffff',
+    backgroundColor: 'transparent',
+    justifyContent: 'center',
+    alignItems: 'center',
+  },
+  selectionCheckboxSelected: {
+    backgroundColor: '#007AFF',
+    borderColor: '#007AFF',
+  },
+  selectionBar: {
+    position: 'absolute',
+    bottom: 0,
+    left: 0,
+    right: 0,
+    backgroundColor: '#ffffff',
+    borderTopWidth: 1,
+    borderTopColor: '#e0e0e0',
+    shadowColor: '#000',
+    shadowOffset: {width: 0, height: -2},
+    shadowOpacity: 0.1,
+    shadowRadius: 4,
+    elevation: 8,
+  },
+  selectionBarContent: {
+    flexDirection: 'row',
+    alignItems: 'center',
+    justifyContent: 'space-between',
+    paddingHorizontal: 20,
+    paddingTop: 16,
+  },
+  selectionBarCancelButton: {
+    paddingVertical: 8,
+    paddingHorizontal: 12,
+  },
+  selectionBarCancelText: {
+    fontSize: 16,
+    color: '#007AFF',
+    fontWeight: '500',
+  },
+  selectionBarCount: {
+    fontSize: 16,
+    fontWeight: '600',
+    color: '#000000',
+    flex: 1,
+    textAlign: 'center',
+  },
+  selectionBarDeleteButton: {
+    flexDirection: 'row',
+    alignItems: 'center',
+    backgroundColor: '#ff3b30',
+    paddingVertical: 8,
+    paddingHorizontal: 16,
+    borderRadius: 8,
+    gap: 6,
+  },
+  selectionBarDeleteButtonDisabled: {
+    backgroundColor: '#e0e0e0',
+  },
+  selectionBarDeleteText: {
+    fontSize: 16,
+    fontWeight: '600',
+    color: '#ffffff',
+  },
+  selectionBarDeleteTextDisabled: {
+    color: '#999999',
   },
 });
 

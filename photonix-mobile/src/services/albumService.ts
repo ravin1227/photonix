@@ -22,7 +22,7 @@ export interface AlbumPermissions {
   can_add_photos: boolean;
   can_delete_album: boolean;
   can_delete_own_photos: boolean;
-  can_delete_any_photos: boolean;
+  can_delete_others_photos: boolean;  // Updated: explicitly false for everyone
   can_share: boolean;
 }
 
@@ -31,6 +31,12 @@ export interface AlbumPhoto {
   original_filename: string;
   thumbnail_url: string;
   captured_at: string | null;
+  uploaded_by: {  // NEW: Who uploaded this photo
+    id: number;
+    name: string;
+  };
+  is_mine: boolean;  // NEW: Did current user upload this photo
+  can_delete: boolean;  // NEW: Can current user delete this photo
 }
 
 export interface AlbumsResponse {

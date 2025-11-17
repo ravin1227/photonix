@@ -922,13 +922,16 @@ export default function PhotoViewerScreen() {
           <Icon name="add-outline" size={24} color="#ffffff" />
           <Text style={styles.actionButtonText}>Add to</Text>
         </TouchableOpacity>
-        <TouchableOpacity
-          style={styles.actionButton}
-          onPress={handleDelete}
-          activeOpacity={0.7}>
-          <Icon name="trash-outline" size={24} color="#ff3040" />
-          <Text style={[styles.actionButtonText, styles.deleteButtonText]}>Delete</Text>
-        </TouchableOpacity>
+        {/* Only show delete button if photo is owned by current user */}
+        {photo?.is_mine && (
+          <TouchableOpacity
+            style={styles.actionButton}
+            onPress={handleDelete}
+            activeOpacity={0.7}>
+            <Icon name="trash-outline" size={24} color="#ff3040" />
+            <Text style={[styles.actionButtonText, styles.deleteButtonText]}>Delete</Text>
+          </TouchableOpacity>
+        )}
       </View>
       )}
 

@@ -29,6 +29,8 @@ import uploadTrackingService from '../../services/uploadTrackingService';
 import devicePhotoService, {DevicePhoto} from '../../services/devicePhotoService';
 import {parseDateString, getDayStart, getDayEnd, isSameDay} from '../../utils/dateUtils';
 import {Image} from 'react-native';
+import photoMergeService, {MergedPhoto} from '../../services/photoMergeService';
+import uploadTracker from '../../services/uploadTracker';
 
 type FilterType = 'Recent' | 'People' | 'Albums';
 
@@ -44,6 +46,7 @@ export default function HomeScreen() {
   const route = useRoute<HomeScreenRouteProp>();
   const [activeFilter, setActiveFilter] = useState<FilterType>('Recent');
   const [photos, setPhotos] = useState<Photo[]>([]);
+  const [mergedPhotos, setMergedPhotos] = useState<MergedPhoto[]>([]); // NEW: Unified timeline
   const [albums, setAlbums] = useState<Album[]>([]);
   const [people, setPeople] = useState<Person[]>([]);
   const [isLoading, setIsLoading] = useState(true);
@@ -56,10 +59,15 @@ export default function HomeScreen() {
   const [devicePhotos, setDevicePhotos] = useState<{[date: string]: DevicePhoto[]}>({});
   const [isLoadingDevicePhotos, setIsLoadingDevicePhotos] = useState(false);
 
+  // Pagination state
+  const [currentPage, setCurrentPage] = useState(1);
+  const [hasMorePhotos, setHasMorePhotos] = useState(true);
+  const [isLoadingMore, setIsLoadingMore] = useState(false);
+  const PER_PAGE = 50; // Load 50 photos at a time
+
   useEffect(() => {
     if (activeFilter === 'Recent') {
-      loadPhotos();
-      loadDevicePhotos();
+      loadPhotos(); // Now includes merging with device photos
     } else if (activeFilter === 'Albums') {
       loadAlbums();
     } else if (activeFilter === 'People') {
@@ -103,39 +111,73 @@ export default function HomeScreen() {
     }
   }, [route.params?.deletedAlbumId, navigation]);
 
-  const loadPhotos = async () => {
+  const loadPhotos = async (page: number = 1, append: boolean = false) => {
     try {
-      setIsLoading(true);
-      const response = await photoService.getPhotos(1, 100);
-      console.log('Photos API Response:', JSON.stringify(response, null, 2));
-      if (response.data) {
-        console.log('Loaded photos:', response.data.photos.length);
-        if (response.data.photos.length > 0) {
-          console.log('First photo:', JSON.stringify(response.data.photos[0], null, 2));
-        }
-        setPhotos(response.data.photos || []);
+      if (page === 1) {
+        setIsLoading(true);
+        setCurrentPage(1);
+        setHasMorePhotos(true);
       } else {
-        // Network error or no data - don't crash, just log
-        console.warn('No data in response:', response.error);
-        // Set empty array instead of crashing
-        setPhotos([]);
+        setIsLoadingMore(true);
       }
+
+      console.log(`[HomeScreen] Loading photos - page ${page}, per page ${PER_PAGE}`);
+
+      // Fetch cloud photos from server (paginated)
+      const response = await photoService.getPhotos(page, PER_PAGE);
+      console.log('[HomeScreen] Photos API Response:', response.data?.photos.length || 0, 'photos');
+
+      const cloudPhotos = response.data?.photos || [];
+      const meta = response.data?.meta;
+
+      // Check if there are more pages
+      const hasMore = meta ? meta.current_page < meta.total_pages : false;
+      setHasMorePhotos(hasMore);
+
+      // Update photos state
+      if (append && page > 1) {
+        setPhotos(prev => [...prev, ...cloudPhotos]);
+      } else {
+        setPhotos(cloudPhotos);
+      }
+
+      // Merge cloud photos with local device photos
+      console.log('[HomeScreen] Starting photo merge...');
+      const allCloudPhotos = append ? [...photos, ...cloudPhotos] : cloudPhotos;
+      const merged = await photoMergeService.mergePhotos(allCloudPhotos);
+      console.log('[HomeScreen] Merge complete:', merged.length, 'total photos');
+      console.log('[HomeScreen] Breakdown:', {
+        uploaded: merged.filter(p => p.syncStatus === 'uploaded').length,
+        localOnly: merged.filter(p => p.syncStatus === 'local_only').length,
+      });
+
+      setMergedPhotos(merged);
+      setCurrentPage(page);
+
     } catch (error: any) {
-      // Handle network errors gracefully
-      console.error('Error loading photos:', error);
-      // Set empty array on error so app doesn't crash
-      setPhotos([]);
+      console.error('[HomeScreen] Error loading photos:', error);
+      if (page === 1) {
+        setPhotos([]);
+        setMergedPhotos([]);
+      }
     } finally {
       setIsLoading(false);
       setIsRefreshing(false);
+      setIsLoadingMore(false);
+    }
+  };
+
+  const loadMorePhotos = () => {
+    if (!isLoadingMore && hasMorePhotos && !isLoading) {
+      console.log('[HomeScreen] Loading more photos, next page:', currentPage + 1);
+      loadPhotos(currentPage + 1, true);
     }
   };
 
   const onRefresh = () => {
     setIsRefreshing(true);
     if (activeFilter === 'Recent') {
-      loadPhotos();
-      loadDevicePhotos();
+      loadPhotos(); // Now includes merging with device photos
     } else if (activeFilter === 'Albums') {
       loadAlbums();
     } else if (activeFilter === 'People') {
@@ -480,6 +522,38 @@ export default function HomeScreen() {
     loadAlbums();
   };
 
+  // Handle uploading local-only photos
+  const handleUploadLocalPhotos = async (localPhotos: MergedPhoto[]) => {
+    try {
+      console.log('[HomeScreen] Uploading', localPhotos.length, 'local photos');
+
+      for (const photo of localPhotos) {
+        if (!photo.originalUri) continue;
+
+        const file = {
+          uri: photo.originalUri,
+          type: 'image/jpeg', // TODO: Get actual type
+          name: photo.filename,
+        };
+
+        const result = await photoService.uploadPhoto(file);
+
+        if (result.data?.photo) {
+          // Track the upload
+          await uploadTracker.markAsUploaded(photo.originalUri, result.data.photo.id);
+          console.log('[HomeScreen] Uploaded and tracked:', photo.filename, '→', result.data.photo.id);
+        }
+      }
+
+      // Reload photos after upload
+      await loadPhotos();
+      Alert.alert('Success', `Uploaded ${localPhotos.length} photo(s)`);
+    } catch (error: any) {
+      console.error('[HomeScreen] Error uploading local photos:', error);
+      Alert.alert('Error', error.message || 'Failed to upload photos');
+    }
+  };
+
   // Group photos by date (server photos)
   const groupPhotosByDate = () => {
     const grouped: {[key: string]: Photo[]} = {};
@@ -506,25 +580,16 @@ export default function HomeScreen() {
     return grouped;
   };
 
-  // Merge server photos and device photos by date
+  // Get merged photos grouped by date (Google Photos style)
   const getMergedPhotosByDate = () => {
-    const serverGrouped = groupPhotosByDate();
-    const allDates = new Set([
-      ...Object.keys(serverGrouped),
-      ...Object.keys(devicePhotos),
-    ]);
+    const grouped = photoMergeService.groupPhotosByDate(mergedPhotos);
 
-    return Array.from(allDates)
-      .filter(date => {
-        const serverCount = serverGrouped[date]?.length || 0;
-        const deviceCount = devicePhotos[date]?.length || 0;
-        return serverCount > 0 || deviceCount > 0;
-      })
-      .sort((a, b) => new Date(b).getTime() - new Date(a).getTime())
-      .map(date => ({
+    return Array.from(grouped.entries())
+      .sort((a, b) => new Date(b[0]).getTime() - new Date(a[0]).getTime())
+      .map(([date, photos]) => ({
         date,
-        serverPhotos: serverGrouped[date] || [],
-        devicePhotos: devicePhotos[date] || [],
+        dateHeader: photoMergeService.formatDateHeader(date),
+        photos,
       }));
   };
 
@@ -584,115 +649,72 @@ export default function HomeScreen() {
 
     return (
       <>
-        {mergedDates.map(({date, serverPhotos, devicePhotos: dateDevicePhotos}) => {
+        {mergedDates.map(({date, dateHeader, photos}) => {
           const uploadState = uploadingDates[date];
-          const dateStatus = dateUploadStatus[date];
-          const allUploaded = dateStatus?.allUploaded || false;
-          const hasUploaded = uploadState && uploadState.uploaded === uploadState.total && uploadState.total > 0;
-          const totalPhotos = serverPhotos.length + dateDevicePhotos.length;
+          const localOnlyPhotos = photos.filter(p => p.syncStatus === 'local_only');
+          const hasLocalPhotos = localOnlyPhotos.length > 0;
+          const totalPhotos = photos.length;
           
           return (
             <View key={`${date}-${totalPhotos}`}>
               <View style={styles.dateHeaderContainer}>
-                <Text style={styles.dateHeader}>{date}</Text>
-                <UploadButton
-                  onPress={() => handleUploadDatePhotos(date)}
-                  isUploading={uploadState?.isUploading || false}
-                  uploadedCount={uploadState?.uploaded}
-                  totalCount={uploadState?.total}
-                  showMenu={allUploaded || hasUploaded}
-                  isAllUploaded={allUploaded}
-                  onMenuPress={() => {
-                    Alert.alert(
-                      'Date Options',
-                      'Choose an action',
-                      [
-                        {text: 'Cancel', style: 'cancel'},
-                        {text: 'Upload More', onPress: () => handleUploadDatePhotos(date)},
-                        {text: 'View All', onPress: () => {/* Navigate to date filter */}},
-                      ],
-                    );
-                  }}
-                />
+                <Text style={styles.dateHeader}>{dateHeader}</Text>
+                {hasLocalPhotos && (
+                  <UploadButton
+                    onPress={() => handleUploadLocalPhotos(localOnlyPhotos)}
+                    isUploading={uploadState?.isUploading || false}
+                    uploadedCount={uploadState?.uploaded}
+                    totalCount={uploadState?.total}
+                    showMenu={false}
+                    isAllUploaded={false}
+                  />
+                )}
               </View>
               <View style={styles.grid}>
-              {/* Render server photos (uploaded) */}
-              {serverPhotos
-                .filter((photo: Photo) => photo && photo.id)
-                .map((photo: Photo) => {
-                  const thumbnailUrl = getThumbnailUrl(photo);
-                  return (
-                    <View key={`server-${photo.id}`} style={styles.photoThumbnail}>
-                      <TouchableOpacity
-                        style={styles.photoTouchable}
-                        onPress={() => {
-                          navigation.navigate('PhotoViewer', {photoId: photo.id});
-                        }}>
-                        {thumbnailUrl ? (
-                          <AuthImage
-                            source={{uri: thumbnailUrl}}
-                            style={styles.photoImage}
-                            resizeMode="cover"
-                          />
-                        ) : (
-                          <View style={styles.photoPlaceholder}>
-                            <Icon 
-                              name="ban" 
-                              size={32} 
-                              color="#999999" 
-                            />
-                          </View>
-                        )}
-                      </TouchableOpacity>
-                      {/* Upload status indicator - photos from server are always uploaded */}
-                      <View style={styles.photoStatusIndicator}>
-                        <PhotoUploadStatus isUploaded={true} size={18} />
-                      </View>
-                    </View>
-                );
-              })}
-              
-              {/* Render device photos (not uploaded yet) */}
-              {dateDevicePhotos.map((devicePhoto: DevicePhoto) => {
+              {/* Render all merged photos (deduplicated, sorted by capture date) */}
+              {photos.map((photo: MergedPhoto) => {
+                const isLocalOnly = photo.syncStatus === 'local_only';
+                const isUploaded = photo.syncStatus === 'uploaded';
+
                 return (
-                  <View key={`device-${devicePhoto.id}`} style={styles.photoThumbnail}>
+                  <View key={photo.id} style={styles.photoThumbnail}>
                     <TouchableOpacity
                       style={styles.photoTouchable}
-                      onPress={async () => {
-                        // Check upload status
-                        const uploaded = await uploadTrackingService.isPhotoUploaded(devicePhoto.id);
-                        if (uploaded) {
-                          // Find server photo ID and navigate to server version
-                          const uploadedInfo = await uploadTrackingService.getUploadedPhoto(devicePhoto.id);
-                          if (uploadedInfo?.serverPhotoId) {
-                            navigation.navigate('PhotoViewer', {photoId: uploadedInfo.serverPhotoId});
-                          } else {
-                            // Fallback to local if server ID not found
-                            navigation.navigate('PhotoViewer', {
-                              localUri: devicePhoto.uri,
-                              photoTitle: devicePhoto.filename,
-                            });
-                          }
+                      onPress={() => {
+                        // For uploaded photos, open in viewer with cloud ID
+                        if (photo.cloudId) {
+                          navigation.navigate('PhotoViewer', {photoId: photo.cloudId});
                         } else {
-                          // View local photo directly without uploading
+                          // For local-only photos, open with local URI
                           navigation.navigate('PhotoViewer', {
-                            localUri: devicePhoto.uri,
-                            photoTitle: devicePhoto.filename,
+                            localUri: photo.uri,
+                            photoTitle: photo.filename,
                           });
                         }
                       }}>
-                      <Image
-                        source={{uri: devicePhoto.uri}}
-                        style={styles.photoImage}
-                        resizeMode="cover"
-                      />
+                      {/* Use AuthImage for cloud photos, Image for local photos */}
+                      {isUploaded && photo.uri ? (
+                        <AuthImage
+                          source={{uri: photo.uri}}
+                          style={styles.photoImage}
+                          resizeMode="cover"
+                        />
+                      ) : (
+                        <Image
+                          source={{uri: photo.uri}}
+                          style={styles.photoImage}
+                          resizeMode="cover"
+                        />
+                      )}
                     </TouchableOpacity>
-                    {/* Upload status indicator */}
+                    {/* Sync status indicator */}
                     <View style={styles.photoStatusIndicator}>
-                      <PhotoUploadStatus 
-                        isUploaded={false} 
-                        size={18} 
-                      />
+                      {isLocalOnly && (
+                        <Icon name="cloud-upload-outline" size={18} color="#ffffff" />
+                      )}
+                      {isUploaded && (
+                        <PhotoUploadStatus isUploaded={true} size={18} />
+                      )}
                     </View>
                   </View>
                 );
@@ -923,8 +945,29 @@ export default function HomeScreen() {
         contentContainerStyle={styles.gridContainer}
         refreshControl={
           <RefreshControl refreshing={isRefreshing} onRefresh={onRefresh} />
-        }>
+        }
+        onScroll={({nativeEvent}) => {
+          // Detect when user scrolls near bottom and load more
+          const {layoutMeasurement, contentOffset, contentSize} = nativeEvent;
+          const paddingToBottom = 300; // Trigger load when 300px from bottom
+          const isCloseToBottom =
+            layoutMeasurement.height + contentOffset.y >=
+            contentSize.height - paddingToBottom;
+
+          if (isCloseToBottom && activeFilter === 'Recent') {
+            loadMorePhotos();
+          }
+        }}
+        scrollEventThrottle={400}>
         {renderContent()}
+
+        {/* Loading indicator for pagination */}
+        {isLoadingMore && (
+          <View style={styles.loadMoreContainer}>
+            <ActivityIndicator size="small" color="#666666" />
+            <Text style={styles.loadMoreText}>Loading more photos...</Text>
+          </View>
+        )}
       </ScrollView>
 
       {/* Floating Action Button - Show on Albums and Recent tabs */}
@@ -1164,6 +1207,17 @@ const styles = StyleSheet.create({
         shadowOpacity: 0.3,
         shadowRadius: 8,
         elevation: 8,
+      },
+      loadMoreContainer: {
+        flexDirection: 'row',
+        alignItems: 'center',
+        justifyContent: 'center',
+        paddingVertical: 20,
+        gap: 12,
+      },
+      loadMoreText: {
+        fontSize: 14,
+        color: '#666666',
       },
       skeletonDateHeader: {
         flexDirection: 'row',

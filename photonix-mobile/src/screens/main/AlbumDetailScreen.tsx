@@ -23,6 +23,9 @@ import {HomeStackParamList} from '../../navigation/HomeStackNavigator';
 import {API_CONFIG} from '../../config/api';
 import AuthImage from '../../components/AuthImage';
 import ShareAlbumModal from '../../components/ShareAlbumModal';
+import photoMergeService, {MergedPhoto} from '../../services/photoMergeService';
+import uploadTracker from '../../services/uploadTracker';
+import {Image} from 'react-native';
 
 type AlbumDetailRouteParams = {
   AlbumDetail: {
@@ -52,10 +55,11 @@ export default function AlbumDetailScreen() {
   const [isDeleting, setIsDeleting] = useState(false);
   const [showAddPhotosModal, setShowAddPhotosModal] = useState(false);
   const [showShareModal, setShowShareModal] = useState(false);
-  const [availablePhotos, setAvailablePhotos] = useState<Photo[]>([]);
-  const [selectedPhotos, setSelectedPhotos] = useState<number[]>([]);
+  const [availablePhotos, setAvailablePhotos] = useState<MergedPhoto[]>([]); // Changed to MergedPhoto
+  const [selectedPhotos, setSelectedPhotos] = useState<string[]>([]); // Changed to string[] for merged photo IDs
   const [isLoadingPhotos, setIsLoadingPhotos] = useState(false);
   const [isAddingPhotos, setIsAddingPhotos] = useState(false);
+  const [uploadProgress, setUploadProgress] = useState<{current: number; total: number} | null>(null);
   const [permissions, setPermissions] = useState<AlbumPermissions>({
     is_owner: false,
     can_view: true,
@@ -140,17 +144,49 @@ export default function AlbumDetailScreen() {
   const loadAvailablePhotos = async () => {
     try {
       setIsLoadingPhotos(true);
-      const response = await photoService.getPhotos(1, 1000);
-      if (response.data) {
-        // Filter out photos that are already in the album
-        const albumPhotoIds = new Set(photos.map(p => p.id));
-        const filtered = response.data.photos.filter(
-          photo => !albumPhotoIds.has(photo.id),
-        );
-        setAvailablePhotos(filtered);
+      console.log('[AlbumDetail] Loading available photos (local + cloud) - paginated');
+
+      // Get cloud photos in batches (50 at a time) instead of 1000
+      const PER_PAGE = 50;
+      let allCloudPhotos: Photo[] = [];
+      let currentPage = 1;
+      let hasMore = true;
+
+      // Load first 3 pages (150 photos) for initial display
+      // Rest will load on scroll
+      const MAX_INITIAL_PAGES = 3;
+
+      while (hasMore && currentPage <= MAX_INITIAL_PAGES) {
+        const response = await photoService.getPhotos(currentPage, PER_PAGE);
+        const cloudPhotos = response.data?.photos || [];
+        allCloudPhotos = [...allCloudPhotos, ...cloudPhotos];
+
+        const meta = response.data?.meta;
+        hasMore = meta ? meta.current_page < meta.total_pages : false;
+        currentPage++;
+
+        console.log(`[AlbumDetail] Loaded page ${currentPage - 1}, total so far: ${allCloudPhotos.length}`);
       }
+
+      // Merge with local photos
+      const mergedPhotos = await photoMergeService.mergePhotos(allCloudPhotos);
+      console.log('[AlbumDetail] Merged photos:', mergedPhotos.length);
+
+      // Filter out photos that are already in the album
+      const albumPhotoIds = new Set(photos.map(p => p.id));
+      const filtered = mergedPhotos.filter(photo => {
+        // For uploaded photos, check by cloud ID
+        if (photo.cloudId) {
+          return !albumPhotoIds.has(photo.cloudId);
+        }
+        // For local-only photos, always include (not in album yet)
+        return true;
+      });
+
+      console.log('[AlbumDetail] Available photos after filtering:', filtered.length);
+      setAvailablePhotos(filtered);
     } catch (error) {
-      console.error('Error loading photos:', error);
+      console.error('[AlbumDetail] Error loading photos:', error);
     } finally {
       setIsLoadingPhotos(false);
     }
@@ -166,7 +202,7 @@ export default function AlbumDetailScreen() {
     setSelectedPhotos([]);
   };
 
-  const togglePhotoSelection = (photoId: number) => {
+  const togglePhotoSelection = (photoId: string) => {
     setSelectedPhotos(prev => {
       if (prev.includes(photoId)) {
         return prev.filter(id => id !== photoId);
@@ -184,7 +220,69 @@ export default function AlbumDetailScreen() {
 
     try {
       setIsAddingPhotos(true);
-      const addPhotoPromises = selectedPhotos.map(photoId =>
+      console.log('[AlbumDetail] Adding photos to album:', selectedPhotos);
+
+      // Get the actual photo objects from availablePhotos
+      const photosToAdd = availablePhotos.filter(p => selectedPhotos.includes(p.id));
+
+      // Separate local-only photos from already-uploaded photos
+      const localPhotos = photosToAdd.filter(p => p.syncStatus === 'local_only');
+      const uploadedPhotos = photosToAdd.filter(p => p.cloudId);
+
+      console.log('[AlbumDetail] Local photos to upload:', localPhotos.length);
+      console.log('[AlbumDetail] Already uploaded photos:', uploadedPhotos.length);
+
+      const cloudPhotoIds: number[] = [];
+
+      // Step 1: Upload local photos first (like Google Photos!)
+      if (localPhotos.length > 0) {
+        setUploadProgress({current: 0, total: localPhotos.length});
+
+        for (let i = 0; i < localPhotos.length; i++) {
+          const photo = localPhotos[i];
+          console.log(`[AlbumDetail] Uploading ${i + 1}/${localPhotos.length}: ${photo.filename}`);
+
+          if (!photo.originalUri) {
+            console.warn('[AlbumDetail] Skipping photo without originalUri:', photo.filename);
+            continue;
+          }
+
+          const file = {
+            uri: photo.originalUri,
+            type: 'image/jpeg', // TODO: Get actual type from photo
+            name: photo.filename,
+          };
+
+          const result = await photoService.uploadPhoto(file);
+
+          if (result.data?.photo) {
+            const cloudId = result.data.photo.id;
+            cloudPhotoIds.push(cloudId);
+
+            // Track this upload
+            await uploadTracker.markAsUploaded(photo.originalUri, cloudId);
+            console.log('[AlbumDetail] Uploaded and tracked:', photo.filename, '→', cloudId);
+
+            setUploadProgress({current: i + 1, total: localPhotos.length});
+          } else {
+            console.error('[AlbumDetail] Upload failed for:', photo.filename, result.error);
+          }
+        }
+
+        setUploadProgress(null);
+      }
+
+      // Step 2: Add already-uploaded photos' IDs
+      uploadedPhotos.forEach(p => {
+        if (p.cloudId) {
+          cloudPhotoIds.push(p.cloudId);
+        }
+      });
+
+      console.log('[AlbumDetail] Adding', cloudPhotoIds.length, 'photos to album');
+
+      // Step 3: Add all photos to album
+      const addPhotoPromises = cloudPhotoIds.map(photoId =>
         albumService.addPhotoToAlbum(albumId, photoId),
       );
 
@@ -193,24 +291,30 @@ export default function AlbumDetailScreen() {
       // Refresh album photos
       await loadPhotos(1);
 
-      Alert.alert('Success', `${selectedPhotos.length} photo(s) added to album`, [
+      const message = localPhotos.length > 0
+        ? `Uploaded ${localPhotos.length} photo(s) and added ${cloudPhotoIds.length} photo(s) to album`
+        : `Added ${cloudPhotoIds.length} photo(s) to album`;
+
+      Alert.alert('Success', message, [
         {text: 'OK', onPress: handleCloseAddPhotosModal},
       ]);
     } catch (error: any) {
+      console.error('[AlbumDetail] Error adding photos:', error);
       Alert.alert('Error', 'Failed to add photos: ' + (error.message || 'Unknown error'));
     } finally {
       setIsAddingPhotos(false);
+      setUploadProgress(null);
     }
   };
 
-  const getThumbnailUrlForSelection = (photo: Photo): string => {
-    const url = photo.thumbnail_urls?.small || photo.thumbnail_urls?.medium || photo.thumbnail_urls?.large || '';
-    if (!url) return '';
-    if (url.startsWith('http')) {
-      return url;
+  const getThumbnailUrlForSelection = (photo: MergedPhoto): string => {
+    // For local photos, return the local URI directly
+    if (photo.syncStatus === 'local_only') {
+      return photo.uri;
     }
-    const baseUrl = API_CONFIG.BASE_URL.replace('/api/v1', '');
-    return `${baseUrl}${url}`;
+
+    // For uploaded photos, return the cloud thumbnail
+    return photo.uri || '';
   };
 
   const handleDeletePhoto = async (photoId: number) => {
@@ -684,6 +788,16 @@ export default function AlbumDetailScreen() {
           </View>
 
           <ScrollView style={styles.addPhotosModalContent} contentContainerStyle={{paddingBottom: insets.bottom + 20}}>
+            {/* Upload Progress Indicator */}
+            {uploadProgress && (
+              <View style={styles.uploadProgressContainer}>
+                <ActivityIndicator size="small" color="#000000" />
+                <Text style={styles.uploadProgressText}>
+                  Uploading {uploadProgress.current} of {uploadProgress.total} photo(s)...
+                </Text>
+              </View>
+            )}
+
             {isLoadingPhotos ? (
               <View style={styles.addPhotosLoadingContainer}>
                 <ActivityIndicator size="large" color="#666666" />
@@ -702,22 +816,42 @@ export default function AlbumDetailScreen() {
                 {availablePhotos.map(photo => {
                   const thumbnailUrl = getThumbnailUrlForSelection(photo);
                   const isSelected = selectedPhotos.includes(photo.id);
+                  const isLocalOnly = photo.syncStatus === 'local_only';
+
                   return (
                     <TouchableOpacity
                       key={photo.id}
                       style={styles.addPhotoSelectItem}
                       onPress={() => togglePhotoSelection(photo.id)}>
                       {thumbnailUrl ? (
-                        <AuthImage
-                          source={{uri: thumbnailUrl}}
-                          style={styles.addPhotoSelectImage}
-                          resizeMode="cover"
-                        />
+                        // Use Image for local photos, AuthImage for cloud photos
+                        isLocalOnly ? (
+                          <Image
+                            source={{uri: thumbnailUrl}}
+                            style={styles.addPhotoSelectImage}
+                            resizeMode="cover"
+                          />
+                        ) : (
+                          <AuthImage
+                            source={{uri: thumbnailUrl}}
+                            style={styles.addPhotoSelectImage}
+                            resizeMode="cover"
+                          />
+                        )
                       ) : (
                         <View style={styles.addPhotoSelectPlaceholder}>
                           <Icon name="ban" size={24} color="#999999" />
                         </View>
                       )}
+
+                      {/* Local photo badge */}
+                      {isLocalOnly && (
+                        <View style={styles.localPhotoBadge}>
+                          <Icon name="phone-portrait-outline" size={14} color="#ffffff" />
+                        </View>
+                      )}
+
+                      {/* Selection overlay */}
                       {isSelected && (
                         <View style={styles.addPhotoSelectOverlay}>
                           <View style={styles.addPhotoSelectCheck}>
@@ -1123,6 +1257,30 @@ const styles = StyleSheet.create({
     backgroundColor: '#000000',
     justifyContent: 'center',
     alignItems: 'center',
+  },
+  uploadProgressContainer: {
+    flexDirection: 'row',
+    alignItems: 'center',
+    justifyContent: 'center',
+    padding: 16,
+    backgroundColor: '#f5f5f5',
+    marginHorizontal: 12,
+    marginTop: 12,
+    borderRadius: 8,
+    gap: 12,
+  },
+  uploadProgressText: {
+    fontSize: 14,
+    color: '#000000',
+    fontWeight: '500',
+  },
+  localPhotoBadge: {
+    position: 'absolute',
+    top: 4,
+    left: 4,
+    backgroundColor: 'rgba(0, 122, 255, 0.9)',
+    borderRadius: 4,
+    padding: 4,
   },
   // Multi-select styles
   selectionOverlay: {

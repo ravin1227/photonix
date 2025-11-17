@@ -6,8 +6,9 @@ module Api
 
       # GET /api/v1/photos
       def index
+        # Sort by captured_at (photo date) if available, fallback to created_at (upload date)
         photos = current_user.photos.active
-                            .order(created_at: :desc)
+                            .order(Arel.sql('COALESCE(captured_at, created_at) DESC'))
                             .page(params[:page])
                             .per(params[:per_page] || 50)
 

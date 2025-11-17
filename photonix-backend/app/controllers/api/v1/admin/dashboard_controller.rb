@@ -94,7 +94,7 @@ module Api
             {
               id: album.id,
               name: album.name,
-              photo_count: album.photos.count,
+              photo_count: album.photos.active.count,
               shared_with_count: album.album_users.count,
               created_at: album.created_at
             }

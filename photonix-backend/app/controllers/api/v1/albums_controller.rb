@@ -177,7 +177,7 @@ module Api
           privacy: album.privacy,
           album_type: album.album_type,
           is_shared: album.is_shared,
-          photo_count: album.photos.count,
+          photo_count: album.photos.active.count, # Only count active (non-deleted) photos
           shared_with_count: album.album_users.count,
           cover_photo_url: cover_photo_url(album),
           created_at: album.created_at,
@@ -199,7 +199,7 @@ module Api
 
       def album_detail_response(album)
         album_response(album).merge(
-          photos_count: album.photos.count
+          photos_count: album.photos.active.count # Only count active (non-deleted) photos
         )
       end
 

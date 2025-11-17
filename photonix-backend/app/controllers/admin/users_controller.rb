@@ -8,7 +8,7 @@ module Admin
 
     def show
       @shared_albums = @user.shared_albums
-      @photos_count = @user.photos.count
+      @photos_count = @user.photos.active.count
     end
 
     def new

@@ -33,6 +33,8 @@ type PhotoViewerRouteParams = {
     photoId?: number;
     localUri?: string;
     photoTitle?: string;
+    photoList?: Array<{id?: number; cloudId?: number; localUri?: string; isLocal?: boolean}>;
+    initialIndex?: number;
   };
 };
 
@@ -41,7 +43,7 @@ type PhotoViewerScreenRouteProp = RouteProp<PhotoViewerRouteParams, 'PhotoViewer
 export default function PhotoViewerScreen() {
   const route = useRoute<PhotoViewerScreenRouteProp>();
   const navigation = useNavigation<NavigationProp<HomeStackParamList | AlbumsStackParamList>>();
-  const {photoId, localUri, photoTitle} = route.params;
+  const {photoId, localUri, photoTitle, photoList: routePhotoList, initialIndex: routeInitialIndex} = route.params;
   const insets = useSafeAreaInsets();
 
   const [photo, setPhoto] = useState<PhotoDetail | null>(null);
@@ -94,13 +96,30 @@ export default function PhotoViewerScreen() {
         tags: [],
         albums: [],
       } as PhotoDetail);
+      
+      // Use route photo list if provided for navigation
+      if (routePhotoList && routePhotoList.length > 0) {
+        setAllPhotos(routePhotoList.map(p => ({id: p.cloudId || p.id || 0})));
+        if (routeInitialIndex !== undefined && routeInitialIndex >= 0) {
+          setCurrentPhotoIndex(routeInitialIndex);
+        }
+      }
     } else if (photoId) {
       setIsLocalPhoto(false);
       // Don't set isLoading to false - show screen immediately with skeleton
       // Start loading in background
       loadPhoto();
       loadAlbums();
-      loadAllPhotos(); // Load all photos for navigation
+      
+      // Use route photo list if provided, otherwise load all photos
+      if (routePhotoList && routePhotoList.length > 0) {
+        setAllPhotos(routePhotoList.map(p => ({id: p.cloudId || p.id || 0})));
+        if (routeInitialIndex !== undefined && routeInitialIndex >= 0) {
+          setCurrentPhotoIndex(routeInitialIndex);
+        }
+      } else {
+        loadAllPhotos(); // Fallback: Load all photos for navigation
+      }
     } else {
       setLoadError('No photo ID or local URI provided');
       setIsLoading(false);
@@ -115,7 +134,7 @@ export default function PhotoViewerScreen() {
         });
       }
     };
-  }, [photoId, localUri, navigation]);
+  }, [photoId, localUri, photoTitle, routePhotoList, routeInitialIndex, navigation]);
 
   // Update current photo index when photo loads
   useEffect(() => {
@@ -251,39 +270,57 @@ export default function PhotoViewerScreen() {
   };
 
   const navigateToPhoto = (direction: 'next' | 'prev') => {
-    // Don't allow navigation for local photos (no server photos to navigate to)
-    if (isLocalPhoto) {
-      console.log('Cannot navigate - local photo');
-      return;
-    }
-    
     console.log('navigateToPhoto called:', direction);
     console.log('allPhotos.length:', allPhotos.length, 'currentPhotoIndex:', currentPhotoIndex);
     
     // Ensure we have photos loaded
     if (allPhotos.length === 0) {
       console.log('No photos loaded, loading photos...');
-      loadAllPhotos().then(() => {
-        // After loading, try navigation again
-        setTimeout(() => navigateToPhoto(direction), 200);
-      });
+      if (routePhotoList && routePhotoList.length > 0) {
+        // Use route photo list
+        const photoList = routePhotoList.map(p => ({id: p.cloudId || p.id || 0}));
+        setAllPhotos(photoList);
+        if (routeInitialIndex !== undefined && routeInitialIndex >= 0) {
+          setCurrentPhotoIndex(routeInitialIndex);
+          setTimeout(() => navigateToPhoto(direction), 100);
+        }
+      } else {
+        loadAllPhotos().then(() => {
+          // After loading, try navigation again
+          setTimeout(() => navigateToPhoto(direction), 200);
+        });
+      }
       return;
     }
     
     // Find current index if not set
     let currentIndex = currentPhotoIndex;
-    if (currentIndex === -1 && photoId) {
-      console.log('Current photo index not set, finding it...');
-      currentIndex = allPhotos.findIndex(p => p.id === photoId);
-      if (currentIndex === -1) {
-        console.log('Current photo not found in list, reloading photos...');
-        loadAllPhotos().then(() => {
-          setTimeout(() => navigateToPhoto(direction), 200);
-        });
-        return;
+    if (currentIndex === -1) {
+      if (routeInitialIndex !== undefined && routeInitialIndex >= 0) {
+        currentIndex = routeInitialIndex;
+        setCurrentPhotoIndex(currentIndex);
+      } else if (photoId) {
+        console.log('Current photo index not set, finding it...');
+        currentIndex = allPhotos.findIndex(p => p.id === photoId);
+        if (currentIndex === -1) {
+          console.log('Current photo not found in list, using route index...');
+          if (routeInitialIndex !== undefined && routeInitialIndex >= 0) {
+            currentIndex = routeInitialIndex;
+            setCurrentPhotoIndex(currentIndex);
+          } else {
+            console.log('No valid index found, defaulting to 0');
+            currentIndex = 0;
+            setCurrentPhotoIndex(0);
+          }
+        } else {
+          setCurrentPhotoIndex(currentIndex);
+          console.log('Found current index:', currentIndex);
+        }
+      } else {
+        console.log('No photoId, defaulting to 0');
+        currentIndex = 0;
+        setCurrentPhotoIndex(0);
       }
-      setCurrentPhotoIndex(currentIndex);
-      console.log('Found current index:', currentIndex);
     }
     
     if (currentIndex === -1) {
@@ -307,10 +344,59 @@ export default function PhotoViewerScreen() {
       }
     }
     
-    console.log('Navigating to index:', newIndex, 'photoId:', allPhotos[newIndex].id);
-    const newPhotoId = allPhotos[newIndex].id;
-    setCurrentPhotoIndex(newIndex);
-    loadPhoto(newPhotoId);
+    console.log('Navigating to index:', newIndex);
+    
+    // Get photo info from route photo list if available
+    if (routePhotoList && routePhotoList[newIndex]) {
+      const nextPhoto = routePhotoList[newIndex];
+      setCurrentPhotoIndex(newIndex);
+      
+      if (nextPhoto.isLocal && nextPhoto.localUri) {
+        // Navigate to local photo
+        setIsLocalPhoto(true);
+        setIsLoadingPhoto(false);
+        setPhoto({
+          id: 0,
+          original_filename: 'Local Photo',
+          format: 'image/jpeg',
+          file_size: 0,
+          width: 0,
+          height: 0,
+          captured_at: null,
+          processing_status: 'completed',
+          thumbnail_urls: {},
+          created_at: new Date().toISOString(),
+          tags: [],
+          albums: [],
+        } as PhotoDetail);
+        // Update route params for local photo
+        navigation.setParams({
+          localUri: nextPhoto.localUri,
+          photoTitle: nextPhoto.localUri?.split('/').pop() || 'Local Photo',
+          photoId: undefined,
+        });
+      } else if (nextPhoto.cloudId || nextPhoto.id) {
+        // Navigate to cloud photo
+        setIsLocalPhoto(false);
+        const newPhotoId = nextPhoto.cloudId || nextPhoto.id;
+        if (newPhotoId) {
+          loadPhoto(newPhotoId);
+          navigation.setParams({
+            photoId: newPhotoId,
+            localUri: undefined,
+            photoTitle: undefined,
+          });
+        }
+      }
+    } else {
+      // Fallback: use allPhotos array (server photos only)
+      const newPhotoId = allPhotos[newIndex]?.id;
+      if (newPhotoId) {
+        setCurrentPhotoIndex(newIndex);
+        loadPhoto(newPhotoId);
+      }
+    }
+    
     showBarsTemporarily();
   };
 
@@ -502,12 +588,12 @@ export default function PhotoViewerScreen() {
     () =>
       PanResponder.create({
         onStartShouldSetPanResponder: () => {
-          // Only enable for server photos that have navigation available
-          return !isLocalPhoto && allPhotos.length > 1;
+          // Enable for any photos that have navigation available
+          return allPhotos.length > 1;
         },
         onMoveShouldSetPanResponder: (evt, gestureState) => {
-          // Don't intercept if local photo or no photos to navigate
-          if (isLocalPhoto || allPhotos.length <= 1) return false;
+          // Don't intercept if no photos to navigate
+          if (allPhotos.length <= 1) return false;
           
           // Don't intercept touches in the top bar area (first 100px) or bottom bar area
           const {locationY} = evt.nativeEvent;
@@ -533,8 +619,8 @@ export default function PhotoViewerScreen() {
           }
         },
         onPanResponderRelease: (evt, gestureState) => {
-          // Don't process if local photo
-          if (isLocalPhoto || allPhotos.length <= 1) return;
+          // Don't process if no photos to navigate
+          if (allPhotos.length <= 1) return;
           
           const {dx, dy} = gestureState;
           const absDx = Math.abs(dx);
@@ -568,7 +654,7 @@ export default function PhotoViewerScreen() {
           // Gesture was cancelled
         },
       }),
-    [isLocalPhoto, allPhotos.length, currentPhotoIndex, showBars, navigateToPhoto, showBarsTemporarily, openSheet],
+    [isLocalPhoto, allPhotos.length, currentPhotoIndex, showBars, navigateToPhoto, showBarsTemporarily, openSheet, routePhotoList],
   );
 
   // Handle tap on image to show/hide bars

@@ -90,6 +90,48 @@ class PhotoMergeService {
   }
 
   /**
+   * Convert cloud photos to MergedPhoto format instantly (no merge)
+   * Used for instant display before background merge completes
+   */
+  cloudPhotosToMerged(cloudPhotos: Photo[]): MergedPhoto[] {
+    return cloudPhotos.map(photo => ({
+      id: `cloud_${photo.id}`,
+      uri: this.getCloudPhotoUri(photo),
+      filename: photo.original_filename,
+      capturedAt: new Date(photo.captured_at || photo.created_at),
+      fileSize: photo.file_size,
+      width: photo.width,
+      height: photo.height,
+      isLocal: false,
+      isUploaded: true,
+      cloudId: photo.id,
+      cloudData: photo,
+      syncStatus: 'uploaded' as const,
+    }));
+  }
+
+  /**
+   * Merge photos in background (non-blocking)
+   * Returns a promise that resolves when merge is complete
+   */
+  async mergePhotosInBackground(
+    cloudPhotos: Photo[],
+    onComplete: (merged: MergedPhoto[]) => void
+  ): Promise<void> {
+    // Run merge in next tick to not block UI
+    setTimeout(async () => {
+      try {
+        const merged = await this.mergePhotos(cloudPhotos);
+        onComplete(merged);
+      } catch (error) {
+        console.error('[PhotoMergeService] Background merge error:', error);
+        // On error, just use cloud photos
+        onComplete(this.cloudPhotosToMerged(cloudPhotos));
+      }
+    }, 0);
+  }
+
+  /**
    * Create a deduplication key from photo metadata
    * This helps identify if a local photo is the same as a cloud photo
    */
@@ -127,110 +169,139 @@ class PhotoMergeService {
   /**
    * Merge local device photos with cloud photos into a unified timeline
    * Deduplicates based on filename, size, and capture date
+   * Optimized to only process relevant local photos (date range matching)
    */
   async mergePhotos(cloudPhotos: Photo[]): Promise<MergedPhoto[]> {
-    console.log(`[PhotoMergeService] Starting merge with ${cloudPhotos.length} cloud photos`);
+    try {
+      console.log(`[PhotoMergeService] Starting merge with ${cloudPhotos.length} cloud photos`);
 
-    const merged: MergedPhoto[] = [];
-    const localPhotos = await this.getLocalPhotos();
-    const uploadedPhotos = await uploadTracker.getUploadedPhotos();
+      if (!cloudPhotos || cloudPhotos.length === 0) {
+        console.log('[PhotoMergeService] No cloud photos to merge');
+        return [];
+      }
 
-    console.log(`[PhotoMergeService] Found ${localPhotos.length} local photos`);
+      const merged: MergedPhoto[] = [];
+      
+      // Get date range from cloud photos to optimize local photo fetching
+      const cloudDates = cloudPhotos
+        .map(p => p.captured_at ? new Date(p.captured_at).getTime() : new Date(p.created_at).getTime())
+        .filter(d => !isNaN(d));
+      
+      const minDate = cloudDates.length > 0 ? Math.min(...cloudDates) : 0;
+      const maxDate = cloudDates.length > 0 ? Math.max(...cloudDates) : Date.now();
+      
+      // Get local photos (cached, so fast)
+      const allLocalPhotos = await this.getLocalPhotos();
+      const uploadedPhotos = await uploadTracker.getUploadedPhotos();
 
-    // Create a map of cloud photos for quick lookup
-    const cloudPhotoMap = new Map<number, Photo>();
-    cloudPhotos.forEach(photo => {
-      cloudPhotoMap.set(photo.id, photo);
-    });
+      // Filter local photos to only those in the date range (optimization)
+      const dateRangeBuffer = 7 * 24 * 60 * 60 * 1000; // 7 days buffer for timezone differences
+      const relevantLocalPhotos = allLocalPhotos.filter(local => {
+        const localDate = local.timestamp * 1000;
+        return localDate >= (minDate - dateRangeBuffer) && localDate <= (maxDate + dateRangeBuffer);
+      });
 
-    // Track which cloud photos we've matched to local photos
-    const matchedCloudIds = new Set<number>();
+      console.log(`[PhotoMergeService] Found ${allLocalPhotos.length} total local photos, ${relevantLocalPhotos.length} relevant to date range`);
 
-    // Process local photos first
-    for (const localPhoto of localPhotos) {
-      // Check if this local photo has been uploaded (tracked locally)
-      const cloudId = uploadedPhotos[localPhoto.uri];
-      let matchedCloudPhoto: Photo | undefined;
+      // Create a map of cloud photos for quick lookup
+      const cloudPhotoMap = new Map<number, Photo>();
+      cloudPhotos.forEach(photo => {
+        cloudPhotoMap.set(photo.id, photo);
+      });
 
-      if (cloudId && cloudPhotoMap.has(cloudId)) {
-        // We tracked this upload locally
-        matchedCloudPhoto = cloudPhotoMap.get(cloudId);
-        matchedCloudIds.add(cloudId);
-      } else {
-        // Try to find matching cloud photo by metadata
-        for (const cloudPhoto of cloudPhotos) {
-          if (!matchedCloudIds.has(cloudPhoto.id) && this.isMatchingPhoto(localPhoto, cloudPhoto)) {
-            matchedCloudPhoto = cloudPhoto;
-            matchedCloudIds.add(cloudPhoto.id);
-            // Track this match for future
-            await uploadTracker.markAsUploaded(localPhoto.uri, cloudPhoto.id);
-            break;
+      // Track which cloud photos we've matched to local photos
+      const matchedCloudIds = new Set<number>();
+
+      // Process relevant local photos first
+      for (const localPhoto of relevantLocalPhotos) {
+        // Check if this local photo has been uploaded (tracked locally)
+        const cloudId = uploadedPhotos[localPhoto.uri];
+        let matchedCloudPhoto: Photo | undefined;
+
+        if (cloudId && cloudPhotoMap.has(cloudId)) {
+          // We tracked this upload locally
+          matchedCloudPhoto = cloudPhotoMap.get(cloudId);
+          matchedCloudIds.add(cloudId);
+        } else {
+          // Try to find matching cloud photo by metadata
+          for (const cloudPhoto of cloudPhotos) {
+            if (!matchedCloudIds.has(cloudPhoto.id) && this.isMatchingPhoto(localPhoto, cloudPhoto)) {
+              matchedCloudPhoto = cloudPhoto;
+              matchedCloudIds.add(cloudPhoto.id);
+              // Track this match for future
+              await uploadTracker.markAsUploaded(localPhoto.uri, cloudPhoto.id);
+              break;
+            }
           }
+        }
+
+        if (matchedCloudPhoto) {
+          // Photo exists both locally and in cloud (uploaded)
+          merged.push({
+            id: `cloud_${matchedCloudPhoto.id}`,
+            uri: this.getCloudPhotoUri(matchedCloudPhoto),
+            originalUri: localPhoto.uri,
+            filename: matchedCloudPhoto.original_filename,
+            capturedAt: new Date(matchedCloudPhoto.captured_at || matchedCloudPhoto.created_at),
+            fileSize: matchedCloudPhoto.file_size,
+            width: matchedCloudPhoto.width,
+            height: matchedCloudPhoto.height,
+            isLocal: true,
+            isUploaded: true,
+            cloudId: matchedCloudPhoto.id,
+            cloudData: matchedCloudPhoto,
+            syncStatus: 'uploaded',
+          });
+        } else {
+          // Photo only exists locally (not uploaded)
+          merged.push({
+            id: `local_${localPhoto.uri}`,
+            uri: localPhoto.uri,
+            originalUri: localPhoto.uri,
+            filename: localPhoto.filename,
+            capturedAt: new Date(localPhoto.timestamp * 1000),
+            fileSize: localPhoto.fileSize,
+            width: localPhoto.width,
+            height: localPhoto.height,
+            isLocal: true,
+            isUploaded: false,
+            syncStatus: 'local_only',
+          });
         }
       }
 
-      if (matchedCloudPhoto) {
-        // Photo exists both locally and in cloud (uploaded)
-        merged.push({
-          id: `cloud_${matchedCloudPhoto.id}`,
-          uri: this.getCloudPhotoUri(matchedCloudPhoto),
-          originalUri: localPhoto.uri,
-          filename: matchedCloudPhoto.original_filename,
-          capturedAt: new Date(matchedCloudPhoto.captured_at || matchedCloudPhoto.created_at),
-          fileSize: matchedCloudPhoto.file_size,
-          width: matchedCloudPhoto.width,
-          height: matchedCloudPhoto.height,
-          isLocal: true,
-          isUploaded: true,
-          cloudId: matchedCloudPhoto.id,
-          cloudData: matchedCloudPhoto,
-          syncStatus: 'uploaded',
-        });
-      } else {
-        // Photo only exists locally (not uploaded)
-        merged.push({
-          id: `local_${localPhoto.uri}`,
-          uri: localPhoto.uri,
-          originalUri: localPhoto.uri,
-          filename: localPhoto.filename,
-          capturedAt: new Date(localPhoto.timestamp * 1000),
-          fileSize: localPhoto.fileSize,
-          width: localPhoto.width,
-          height: localPhoto.height,
-          isLocal: true,
-          isUploaded: false,
-          syncStatus: 'local_only',
-        });
+      // Add cloud-only photos (photos that don't exist on device)
+      for (const cloudPhoto of cloudPhotos) {
+        if (!matchedCloudIds.has(cloudPhoto.id)) {
+          merged.push({
+            id: `cloud_${cloudPhoto.id}`,
+            uri: this.getCloudPhotoUri(cloudPhoto),
+            filename: cloudPhoto.original_filename,
+            capturedAt: new Date(cloudPhoto.captured_at || cloudPhoto.created_at),
+            fileSize: cloudPhoto.file_size,
+            width: cloudPhoto.width,
+            height: cloudPhoto.height,
+            isLocal: false,
+            isUploaded: true,
+            cloudId: cloudPhoto.id,
+            cloudData: cloudPhoto,
+            syncStatus: 'uploaded',
+          });
+        }
       }
+
+      // Sort by capture date (newest first)
+      merged.sort((a, b) => b.capturedAt.getTime() - a.capturedAt.getTime());
+
+      console.log(`[PhotoMergeService] Merge complete: ${merged.length} total photos`);
+      console.log(`[PhotoMergeService] Breakdown: ${merged.filter(p => p.syncStatus === 'uploaded').length} uploaded, ${merged.filter(p => p.syncStatus === 'local_only').length} local only`);
+
+      return merged;
+    } catch (error) {
+      console.error('[PhotoMergeService] Error in mergePhotos:', error);
+      // Return cloud photos only on error
+      return this.cloudPhotosToMerged(cloudPhotos);
     }
-
-    // Add cloud-only photos (photos that don't exist on device)
-    for (const cloudPhoto of cloudPhotos) {
-      if (!matchedCloudIds.has(cloudPhoto.id)) {
-        merged.push({
-          id: `cloud_${cloudPhoto.id}`,
-          uri: this.getCloudPhotoUri(cloudPhoto),
-          filename: cloudPhoto.original_filename,
-          capturedAt: new Date(cloudPhoto.captured_at || cloudPhoto.created_at),
-          fileSize: cloudPhoto.file_size,
-          width: cloudPhoto.width,
-          height: cloudPhoto.height,
-          isLocal: false,
-          isUploaded: true,
-          cloudId: cloudPhoto.id,
-          cloudData: cloudPhoto,
-          syncStatus: 'uploaded',
-        });
-      }
-    }
-
-    // Sort by capture date (newest first)
-    merged.sort((a, b) => b.capturedAt.getTime() - a.capturedAt.getTime());
-
-    console.log(`[PhotoMergeService] Merge complete: ${merged.length} total photos`);
-    console.log(`[PhotoMergeService] Breakdown: ${merged.filter(p => p.syncStatus === 'uploaded').length} uploaded, ${merged.filter(p => p.syncStatus === 'local_only').length} local only`);
-
-    return merged;
   }
 
   /**

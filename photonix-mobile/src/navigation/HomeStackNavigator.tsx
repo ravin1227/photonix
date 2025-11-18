@@ -13,6 +13,8 @@ export type HomeStackParamList = {
     photoId?: number; // Server photo ID
     localUri?: string; // Local device photo URI
     photoTitle?: string; // Optional title for local photos
+    photoList?: Array<{id?: number; cloudId?: number; localUri?: string; isLocal?: boolean}>; // Full photo list for swipe navigation
+    initialIndex?: number; // Initial photo index in the list
   };
   AlbumDetail: {
     albumId: number;

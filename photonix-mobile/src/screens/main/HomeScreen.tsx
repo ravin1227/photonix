@@ -1,4 +1,4 @@
-import React, {useState, useEffect} from 'react';
+import React, {useState, useEffect, useRef} from 'react';
 import {
   View,
   Text,
@@ -63,7 +63,21 @@ export default function HomeScreen() {
   const [currentPage, setCurrentPage] = useState(1);
   const [hasMorePhotos, setHasMorePhotos] = useState(true);
   const [isLoadingMore, setIsLoadingMore] = useState(false);
+  const [preloadedPhotos, setPreloadedPhotos] = useState<Photo[]>([]); // Buffer for next page
+  const [isPreloading, setIsPreloading] = useState(false);
+  const [isMerging, setIsMerging] = useState(false); // Track merge status
   const PER_PAGE = 50; // Load 50 photos at a time
+  const PRELOAD_THRESHOLD = 20; // Preload when 20 photos from bottom
+  
+  // Track if component is mounted to prevent state updates after unmount
+  const isMountedRef = useRef(true);
+
+  useEffect(() => {
+    isMountedRef.current = true;
+    return () => {
+      isMountedRef.current = false;
+    };
+  }, []);
 
   useEffect(() => {
     if (activeFilter === 'Recent') {
@@ -117,13 +131,14 @@ export default function HomeScreen() {
         setIsLoading(true);
         setCurrentPage(1);
         setHasMorePhotos(true);
+        setPreloadedPhotos([]); // Clear preload buffer on fresh load
       } else {
         setIsLoadingMore(true);
       }
 
       console.log(`[HomeScreen] Loading photos - page ${page}, per page ${PER_PAGE}`);
 
-      // Fetch cloud photos from server (paginated)
+      // PHASE 1: Fetch cloud photos from server (paginated)
       const response = await photoService.getPhotos(page, PER_PAGE);
       console.log('[HomeScreen] Photos API Response:', response.data?.photos.length || 0, 'photos');
 
@@ -135,24 +150,68 @@ export default function HomeScreen() {
       setHasMorePhotos(hasMore);
 
       // Update photos state
+      const allCloudPhotos = append ? [...photos, ...cloudPhotos] : cloudPhotos;
+      setPhotos(allCloudPhotos);
+
+      // PHASE 2: Show cloud photos INSTANTLY (no merge blocking)
+      console.log('[HomeScreen] Showing cloud photos instantly...');
+      const instantMerged = photoMergeService.cloudPhotosToMerged(cloudPhotos);
+      
       if (append && page > 1) {
-        setPhotos(prev => [...prev, ...cloudPhotos]);
+        // Append to existing merged photos
+        setMergedPhotos(prev => {
+          // Remove duplicates and append new ones
+          const existingIds = new Set(prev.map(p => p.id));
+          const newPhotos = instantMerged.filter(p => !existingIds.has(p.id));
+          return [...prev, ...newPhotos].sort((a, b) => 
+            b.capturedAt.getTime() - a.capturedAt.getTime()
+          );
+        });
       } else {
-        setPhotos(cloudPhotos);
+        // Replace with new photos
+        setMergedPhotos(instantMerged);
       }
 
-      // Merge cloud photos with local device photos
-      console.log('[HomeScreen] Starting photo merge...');
-      const allCloudPhotos = append ? [...photos, ...cloudPhotos] : cloudPhotos;
-      const merged = await photoMergeService.mergePhotos(allCloudPhotos);
-      console.log('[HomeScreen] Merge complete:', merged.length, 'total photos');
-      console.log('[HomeScreen] Breakdown:', {
-        uploaded: merged.filter(p => p.syncStatus === 'uploaded').length,
-        localOnly: merged.filter(p => p.syncStatus === 'local_only').length,
-      });
+      // PHASE 3: Merge with local photos in BACKGROUND (non-blocking)
+      // Only merge if not already merging to prevent crashes
+      if (!isMerging) {
+        setIsMerging(true);
+        console.log('[HomeScreen] Starting background merge with local photos...');
+        photoMergeService.mergePhotosInBackground(allCloudPhotos, (fullyMerged) => {
+          try {
+            // Only update if component is still mounted
+            if (!isMountedRef.current) {
+              console.log('[HomeScreen] Component unmounted, skipping merge update');
+              return;
+            }
+            
+            console.log('[HomeScreen] Background merge complete:', fullyMerged.length, 'total photos');
+            console.log('[HomeScreen] Breakdown:', {
+              uploaded: fullyMerged.filter(p => p.syncStatus === 'uploaded').length,
+              localOnly: fullyMerged.filter(p => p.syncStatus === 'local_only').length,
+            });
+            
+            // Safely update with fully merged photos (includes local photos)
+            // Only update if component is still mounted and active filter is Recent
+            if (activeFilter === 'Recent' && isMountedRef.current) {
+              setMergedPhotos(fullyMerged);
+            }
+          } catch (error) {
+            console.error('[HomeScreen] Error updating merged photos:', error);
+          } finally {
+            if (isMountedRef.current) {
+              setIsMerging(false);
+            }
+          }
+        });
+      }
 
-      setMergedPhotos(merged);
       setCurrentPage(page);
+
+      // PHASE 4: Always preload next page if available (keep 50 photos in backup)
+      if (hasMore && !isPreloading && preloadedPhotos.length === 0) {
+        preloadNextPage(page + 1);
+      }
 
     } catch (error: any) {
       console.error('[HomeScreen] Error loading photos:', error);
@@ -167,10 +226,101 @@ export default function HomeScreen() {
     }
   };
 
+  /**
+   * Preload next page in background (50 photos buffer)
+   * This ensures instant loading when user scrolls
+   */
+  const preloadNextPage = async (nextPage: number) => {
+    if (isPreloading || !hasMorePhotos) return;
+    
+    try {
+      setIsPreloading(true);
+      console.log(`[HomeScreen] Preloading page ${nextPage}...`);
+      
+      const response = await photoService.getPhotos(nextPage, PER_PAGE);
+      const preloaded = response.data?.photos || [];
+      
+      if (preloaded.length > 0) {
+        setPreloadedPhotos(preloaded);
+        console.log(`[HomeScreen] Preloaded ${preloaded.length} photos for page ${nextPage}`);
+      }
+    } catch (error) {
+      console.error('[HomeScreen] Preload error:', error);
+    } finally {
+      setIsPreloading(false);
+    }
+  };
+
+  /**
+   * Load more photos - uses preloaded buffer if available
+   */
   const loadMorePhotos = () => {
     if (!isLoadingMore && hasMorePhotos && !isLoading) {
-      console.log('[HomeScreen] Loading more photos, next page:', currentPage + 1);
-      loadPhotos(currentPage + 1, true);
+      const nextPage = currentPage + 1;
+      
+      // Check if we have preloaded photos
+      if (preloadedPhotos.length > 0) {
+        console.log('[HomeScreen] Using preloaded photos, next page:', nextPage);
+        setIsLoadingMore(true);
+        
+        // Use preloaded photos instantly
+        const instantMerged = photoMergeService.cloudPhotosToMerged(preloadedPhotos);
+        
+        // Update photos state
+        setPhotos(prev => {
+          const updated = [...prev, ...preloadedPhotos];
+          
+          // Merge in background with all photos (only if not already merging)
+          if (!isMerging) {
+            setIsMerging(true);
+            photoMergeService.mergePhotosInBackground(updated, (fullyMerged) => {
+              try {
+                // Only update if component is still mounted
+                if (!isMountedRef.current) {
+                  console.log('[HomeScreen] Component unmounted, skipping merge update from preload');
+                  return;
+                }
+                
+                if (activeFilter === 'Recent' && isMountedRef.current) {
+                  setMergedPhotos(fullyMerged);
+                }
+              } catch (error) {
+                console.error('[HomeScreen] Error updating merged photos from preload:', error);
+              } finally {
+                if (isMountedRef.current) {
+                  setIsMerging(false);
+                  setIsLoadingMore(false);
+                }
+              }
+            });
+          } else {
+            setIsLoadingMore(false);
+          }
+          
+          return updated;
+        });
+        
+        // Update merged photos instantly
+        setMergedPhotos(prev => {
+          const existingIds = new Set(prev.map(p => p.id));
+          const newPhotos = instantMerged.filter(p => !existingIds.has(p.id));
+          return [...prev, ...newPhotos].sort((a, b) => 
+            b.capturedAt.getTime() - a.capturedAt.getTime()
+          );
+        });
+        
+        setCurrentPage(nextPage);
+        setPreloadedPhotos([]); // Clear buffer after use
+        
+        // Immediately preload next page (keep 50 photos in backup)
+        if (hasMorePhotos && !isPreloading) {
+          preloadNextPage(nextPage + 1);
+        }
+      } else {
+        // No preload buffer, load normally
+        console.log('[HomeScreen] Loading more photos, next page:', nextPage);
+        loadPhotos(nextPage, true);
+      }
     }
   };
 
@@ -681,14 +831,34 @@ export default function HomeScreen() {
                     <TouchableOpacity
                       style={styles.photoTouchable}
                       onPress={() => {
+                        // Get all merged photos for swipe navigation
+                        const allMergedPhotos = getMergedPhotosByDate().flatMap(({photos}) => photos);
+                        
+                        // Find current photo index
+                        const currentIndex = allMergedPhotos.findIndex(p => p.id === photo.id);
+                        
+                        // Prepare photo list for navigation
+                        const photoList = allMergedPhotos.map(p => ({
+                          id: p.cloudId,
+                          cloudId: p.cloudId,
+                          localUri: p.isLocal ? p.uri : undefined,
+                          isLocal: p.isLocal,
+                        }));
+                        
                         // For uploaded photos, open in viewer with cloud ID
                         if (photo.cloudId) {
-                          navigation.navigate('PhotoViewer', {photoId: photo.cloudId});
+                          navigation.navigate('PhotoViewer', {
+                            photoId: photo.cloudId,
+                            photoList,
+                            initialIndex: currentIndex >= 0 ? currentIndex : 0,
+                          });
                         } else {
                           // For local-only photos, open with local URI
                           navigation.navigate('PhotoViewer', {
                             localUri: photo.uri,
                             photoTitle: photo.filename,
+                            photoList,
+                            initialIndex: currentIndex >= 0 ? currentIndex : 0,
                           });
                         }
                       }}>
@@ -956,6 +1126,13 @@ export default function HomeScreen() {
 
           if (isCloseToBottom && activeFilter === 'Recent') {
             loadMorePhotos();
+          }
+          
+          // Always keep next page preloaded (50 photos in backup)
+          // Preload when buffer is empty and user is scrolling
+          if (hasMorePhotos && !isPreloading && preloadedPhotos.length === 0) {
+            // Preload next page immediately to keep buffer ready
+            preloadNextPage(currentPage + 1);
           }
         }}
         scrollEventThrottle={400}>

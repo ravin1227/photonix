@@ -21,6 +21,8 @@ export type AlbumsStackParamList = {
     photoId?: number;
     localUri?: string;
     photoTitle?: string;
+    photoList?: Array<{id?: number; cloudId?: number; localUri?: string; isLocal?: boolean}>; // Full photo list for swipe navigation
+    initialIndex?: number; // Initial photo index in the list
   };
 };
 

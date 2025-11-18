@@ -138,7 +138,22 @@ export default function AlbumDetailScreen() {
   };
 
   const handlePhotoPress = (photoId: number) => {
-    navigation.navigate('PhotoViewer', {photoId});
+    // Prepare photo list for swipe navigation
+    const photoList = photos.map(p => ({
+      id: p.id,
+      cloudId: p.id,
+      localUri: undefined,
+      isLocal: false,
+    }));
+    
+    // Find current photo index
+    const currentIndex = photos.findIndex(p => p.id === photoId);
+    
+    navigation.navigate('PhotoViewer', {
+      photoId,
+      photoList,
+      initialIndex: currentIndex >= 0 ? currentIndex : 0,
+    });
   };
 
   const loadAvailablePhotos = async () => {

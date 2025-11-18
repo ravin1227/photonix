@@ -1,5 +1,5 @@
-import React from 'react';
-import {View, Text, StyleSheet, TouchableOpacity, ActivityIndicator} from 'react-native';
+import React, {useEffect, useRef} from 'react';
+import {View, Text, StyleSheet, TouchableOpacity, Animated} from 'react-native';
 import Icon from 'react-native-vector-icons/Ionicons';
 
 interface UploadButtonProps {
@@ -24,24 +24,75 @@ export default function UploadButton({
   const isCompleted = uploadedCount !== undefined && totalCount !== undefined && uploadedCount === totalCount;
   const showUploadedState = isAllUploaded || isCompleted;
 
+  // Animation values
+  const pulseAnim = useRef(new Animated.Value(1)).current;
+  const rotateAnim = useRef(new Animated.Value(0)).current;
+
+  // Animate when uploading
+  useEffect(() => {
+    if (isUploading) {
+      // Pulsing animation
+      Animated.loop(
+        Animated.sequence([
+          Animated.timing(pulseAnim, {
+            toValue: 1.2,
+            duration: 600,
+            useNativeDriver: true,
+          }),
+          Animated.timing(pulseAnim, {
+            toValue: 1,
+            duration: 600,
+            useNativeDriver: true,
+          }),
+        ])
+      ).start();
+
+      // Rotation animation for cloud
+      Animated.loop(
+        Animated.timing(rotateAnim, {
+          toValue: 1,
+          duration: 2000,
+          useNativeDriver: true,
+        })
+      ).start();
+    } else {
+      pulseAnim.setValue(1);
+      rotateAnim.setValue(0);
+    }
+  }, [isUploading, pulseAnim, rotateAnim]);
+
+  const rotate = rotateAnim.interpolate({
+    inputRange: [0, 1],
+    outputRange: ['0deg', '360deg'],
+  });
+
+  const progress = uploadedCount && totalCount ? Math.round((uploadedCount / totalCount) * 100) : 0;
+
   return (
     <View style={styles.container}>
       <TouchableOpacity
-        style={[styles.uploadButton, showUploadedState && styles.uploadButtonCompleted]}
+        style={[
+          styles.uploadButton,
+          isUploading && styles.uploadButtonUploading,
+          showUploadedState && styles.uploadButtonCompleted
+        ]}
         onPress={onPress}
         disabled={isUploading}>
         {isUploading ? (
-          <ActivityIndicator size="small" color="#000000" />
+          <Animated.View
+            style={{
+              transform: [{scale: pulseAnim}, {rotate}],
+            }}>
+            <Icon name="cloud-upload" size={22} color="#4caf50" />
+          </Animated.View>
         ) : showUploadedState ? (
-          <Icon name="checkmark-circle-outline" size={20} color="#000000" />
+          <Icon name="checkmark-circle" size={20} color="#4caf50" />
         ) : (
-          <Icon name="cloud-upload-outline" size={20} color="#000000" />
+          <Icon name="cloud-upload-outline" size={20} color="#666666" />
         )}
-        {isUploading && totalCount && (
-          <Text style={styles.uploadText}>
-            {uploadedCount || 0}/{totalCount}
-          </Text>
-        )}
+        {isUploading && totalCount ? (
+          <Text style={styles.uploadTextGreen}>{progress}%</Text>
+        ) : null}
       </TouchableOpacity>
       {showMenu && (
         <TouchableOpacity style={styles.menuButton} onPress={onMenuPress}>
@@ -69,6 +120,11 @@ const styles = StyleSheet.create({
     borderColor: '#e0e0e0',
     gap: 6,
   },
+  uploadButtonUploading: {
+    backgroundColor: '#f1f8f4',
+    borderColor: '#4caf50',
+    borderWidth: 2,
+  },
   uploadButtonCompleted: {
     backgroundColor: '#e8f5e9',
     borderColor: '#4caf50',
@@ -77,6 +133,11 @@ const styles = StyleSheet.create({
     fontSize: 12,
     color: '#000000',
     fontWeight: '500',
+  },
+  uploadTextGreen: {
+    fontSize: 13,
+    color: '#4caf50',
+    fontWeight: '700',
   },
   menuButton: {
     padding: 4,

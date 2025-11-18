@@ -175,9 +175,25 @@ class PhotoMergeService {
     try {
       console.log(`[PhotoMergeService] Starting merge with ${cloudPhotos.length} cloud photos`);
 
+      // If no cloud photos, just return all local photos
       if (!cloudPhotos || cloudPhotos.length === 0) {
-        console.log('[PhotoMergeService] No cloud photos to merge');
-        return [];
+        console.log('[PhotoMergeService] No cloud photos, loading ALL local photos');
+        const allLocalPhotos = await this.getLocalPhotos();
+        console.log(`[PhotoMergeService] Found ${allLocalPhotos.length} local photos`);
+
+        return allLocalPhotos.map(localPhoto => ({
+          id: `local_${localPhoto.uri}`,
+          uri: localPhoto.uri,
+          originalUri: localPhoto.uri,
+          filename: localPhoto.filename,
+          capturedAt: new Date(localPhoto.timestamp * 1000),
+          fileSize: localPhoto.fileSize,
+          width: localPhoto.width,
+          height: localPhoto.height,
+          isLocal: true,
+          isUploaded: false,
+          syncStatus: 'local_only' as const,
+        })).sort((a, b) => b.capturedAt.getTime() - a.capturedAt.getTime());
       }
 
       const merged: MergedPhoto[] = [];
@@ -194,14 +210,11 @@ class PhotoMergeService {
       const allLocalPhotos = await this.getLocalPhotos();
       const uploadedPhotos = await uploadTracker.getUploadedPhotos();
 
-      // Filter local photos to only those in the date range (optimization)
-      const dateRangeBuffer = 7 * 24 * 60 * 60 * 1000; // 7 days buffer for timezone differences
-      const relevantLocalPhotos = allLocalPhotos.filter(local => {
-        const localDate = local.timestamp * 1000;
-        return localDate >= (minDate - dateRangeBuffer) && localDate <= (maxDate + dateRangeBuffer);
-      });
+      // Use ALL local photos instead of filtering by date range
+      // This ensures all device photos are shown in the timeline
+      const relevantLocalPhotos = allLocalPhotos;
 
-      console.log(`[PhotoMergeService] Found ${allLocalPhotos.length} total local photos, ${relevantLocalPhotos.length} relevant to date range`);
+      console.log(`[PhotoMergeService] Found ${allLocalPhotos.length} total local photos to merge`);
 
       // Create a map of cloud photos for quick lookup
       const cloudPhotoMap = new Map<number, Photo>();

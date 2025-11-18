@@ -3,7 +3,7 @@ class Setting < ApplicationRecord
 
   # Default settings for the application
   DEFAULTS = {
-    'server_url' => 'http://localhost:3000',
+    'server_url' => 'http://192.168.0.164:3000',
     'app_name' => 'Photonix',
     'admin_email' => 'admin@photonix.com',
     'max_upload_size_mb' => '100',

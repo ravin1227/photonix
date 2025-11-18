@@ -191,17 +191,27 @@ class ApiService {
   async upload<T>(
     endpoint: string,
     file: {uri: string; type: string; name: string},
+    metadata?: Record<string, any>,
     options?: ExtendedRequestInit,
   ): Promise<ApiResponse<T>> {
     try {
       const url = `${this.baseUrl}${endpoint.startsWith('/') ? endpoint : '/' + endpoint}`;
       const formData = new FormData();
-      
+
       formData.append('photo', {
         uri: file.uri,
         type: file.type,
         name: file.name,
       } as any);
+
+      // Append any additional metadata fields
+      if (metadata) {
+        Object.keys(metadata).forEach(key => {
+          if (metadata[key] !== undefined && metadata[key] !== null) {
+            formData.append(key, metadata[key]);
+          }
+        });
+      }
 
       const headers: Record<string, string> = {};
       if (this.token) {

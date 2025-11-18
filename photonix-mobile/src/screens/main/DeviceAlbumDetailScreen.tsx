@@ -125,18 +125,51 @@ export default function DeviceAlbumDetailScreen() {
   };
 
   const handlePhotoPress = async (photo: DevicePhoto) => {
-    // Check if photo is uploaded
-    const uploaded = await uploadTrackingService.isPhotoUploaded(photo.id);
-    if (uploaded) {
+    // Prepare photo list for swipe navigation
+    // Use cached uploadedPhotoIds to avoid multiple async calls
+    const photoList = await Promise.all(
+      photos.map(async (p) => {
+        const isUploaded = uploadedPhotoIds.has(p.id);
+        if (isUploaded) {
+          const uploadedInfo = await uploadTrackingService.getUploadedPhoto(p.id);
+          return {
+            id: uploadedInfo?.serverPhotoId,
+            cloudId: uploadedInfo?.serverPhotoId,
+            localUri: p.uri,
+            isLocal: true, // Device photos are always local
+          };
+        } else {
+          return {
+            id: undefined,
+            cloudId: undefined,
+            localUri: p.uri,
+            isLocal: true,
+          };
+        }
+      })
+    );
+    
+    // Find current photo index
+    const currentIndex = photos.findIndex(p => p.id === photo.id);
+    
+    // Check if photo is uploaded (use cached state)
+    const isUploaded = uploadedPhotoIds.has(photo.id);
+    if (isUploaded) {
       // Find server photo ID and navigate to server version
       const uploadedInfo = await uploadTrackingService.getUploadedPhoto(photo.id);
       if (uploadedInfo?.serverPhotoId) {
-        navigation.navigate('PhotoViewer', {photoId: uploadedInfo.serverPhotoId});
+        navigation.navigate('PhotoViewer', {
+          photoId: uploadedInfo.serverPhotoId,
+          photoList,
+          initialIndex: currentIndex >= 0 ? currentIndex : 0,
+        });
       } else {
         // Fallback to local if server ID not found
         navigation.navigate('PhotoViewer', {
           localUri: photo.uri,
           photoTitle: photo.filename,
+          photoList,
+          initialIndex: currentIndex >= 0 ? currentIndex : 0,
         });
       }
     } else {
@@ -144,6 +177,8 @@ export default function DeviceAlbumDetailScreen() {
       navigation.navigate('PhotoViewer', {
         localUri: photo.uri,
         photoTitle: photo.filename,
+        photoList,
+        initialIndex: currentIndex >= 0 ? currentIndex : 0,
       });
     }
   };

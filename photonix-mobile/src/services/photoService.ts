@@ -88,8 +88,8 @@ class PhotoService {
   }
 
   // Upload single photo
-  async uploadPhoto(file: {uri: string; type: string; name: string}) {
-    return apiService.upload<PhotoUploadResponse>('/photos', file);
+  async uploadPhoto(file: {uri: string; type: string; name: string}, capturedAt?: string) {
+    return apiService.upload<PhotoUploadResponse>('/photos', file, {captured_at: capturedAt});
   }
 
   // Upload multiple photos (bulk upload)

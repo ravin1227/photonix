@@ -31,6 +31,7 @@ import {parseDateString, getDayStart, getDayEnd, isSameDay} from '../../utils/da
 import {Image} from 'react-native';
 import photoMergeService, {MergedPhoto} from '../../services/photoMergeService';
 import uploadTracker from '../../services/uploadTracker';
+import NetworkStatusBanner from '../../components/NetworkStatusBanner';
 
 type FilterType = 'Recent' | 'People' | 'Albums';
 
@@ -214,10 +215,31 @@ export default function HomeScreen() {
       }
 
     } catch (error: any) {
-      console.error('[HomeScreen] Error loading photos:', error);
-      if (page === 1) {
-        setPhotos([]);
-        setMergedPhotos([]);
+      console.error('[HomeScreen] Error loading photos (network may be offline):', error);
+
+      // Even if cloud photo loading fails (offline), still show local photos
+      if (page === 1 && !isMerging) {
+        console.log('[HomeScreen] Network error - loading local photos only');
+        setPhotos([]); // No cloud photos
+
+        // Load local photos even when offline
+        setIsMerging(true);
+        photoMergeService.mergePhotosInBackground([], (fullyMerged) => {
+          try {
+            if (!isMountedRef.current) return;
+
+            console.log('[HomeScreen] Offline mode - showing', fullyMerged.length, 'local photos');
+            if (activeFilter === 'Recent' && isMountedRef.current) {
+              setMergedPhotos(fullyMerged);
+            }
+          } catch (mergeError) {
+            console.error('[HomeScreen] Error loading local photos:', mergeError);
+          } finally {
+            if (isMountedRef.current) {
+              setIsMerging(false);
+            }
+          }
+        });
       }
     } finally {
       setIsLoading(false);
@@ -674,8 +696,21 @@ export default function HomeScreen() {
 
   // Handle uploading local-only photos
   const handleUploadLocalPhotos = async (localPhotos: MergedPhoto[]) => {
+    if (localPhotos.length === 0) return;
+
+    // Get the date from the first photo for tracking
+    const date = localPhotos[0].capturedAt.toISOString().split('T')[0];
+
     try {
-      console.log('[HomeScreen] Uploading', localPhotos.length, 'local photos');
+      console.log('[HomeScreen] Uploading', localPhotos.length, 'local photos for date', date);
+
+      // Set initial uploading state
+      setUploadingDates(prev => ({
+        ...prev,
+        [date]: {isUploading: true, uploaded: 0, total: localPhotos.length},
+      }));
+
+      let uploadedCount = 0;
 
       for (const photo of localPhotos) {
         if (!photo.originalUri) continue;
@@ -686,20 +721,41 @@ export default function HomeScreen() {
           name: photo.filename,
         };
 
-        const result = await photoService.uploadPhoto(file);
+        // Include the original capture date when uploading
+        const capturedAt = photo.capturedAt?.toISOString();
+        const result = await photoService.uploadPhoto(file, capturedAt);
 
         if (result.data?.photo) {
           // Track the upload
           await uploadTracker.markAsUploaded(photo.originalUri, result.data.photo.id);
-          console.log('[HomeScreen] Uploaded and tracked:', photo.filename, '→', result.data.photo.id);
+          uploadedCount++;
+
+          // Update progress
+          setUploadingDates(prev => ({
+            ...prev,
+            [date]: {isUploading: true, uploaded: uploadedCount, total: localPhotos.length},
+          }));
+
+          console.log('[HomeScreen] Uploaded and tracked:', photo.filename, '→', result.data.photo.id, `(${uploadedCount}/${localPhotos.length})`);
         }
       }
 
+      // Mark as completed
+      setUploadingDates(prev => ({
+        ...prev,
+        [date]: {isUploading: false, uploaded: uploadedCount, total: localPhotos.length},
+      }));
+
       // Reload photos after upload
       await loadPhotos();
-      Alert.alert('Success', `Uploaded ${localPhotos.length} photo(s)`);
+      Alert.alert('Success', `Uploaded ${uploadedCount} photo(s)`);
     } catch (error: any) {
       console.error('[HomeScreen] Error uploading local photos:', error);
+      // Set error state
+      setUploadingDates(prev => ({
+        ...prev,
+        [date]: {isUploading: false, uploaded: 0, total: 0},
+      }));
       Alert.alert('Error', error.message || 'Failed to upload photos');
     }
   };
@@ -1083,6 +1139,9 @@ export default function HomeScreen() {
 
   return (
     <SafeAreaView style={styles.container} edges={['top']}>
+      {/* Network Status Banner */}
+      <NetworkStatusBanner />
+
       {/* Top Navigation Bar */}
       <View style={styles.navBar}>
         <Text style={styles.appName}>Photonix</Text>
@@ -1147,21 +1206,13 @@ export default function HomeScreen() {
         )}
       </ScrollView>
 
-      {/* Floating Action Button - Show on Albums and Recent tabs */}
+      {/* Floating Action Button - Show only on Albums tab */}
       {activeFilter === 'Albums' && (
         <TouchableOpacity
           style={styles.fab}
           onPress={handleOpenCreateModal}
           activeOpacity={0.8}>
           <Icon name="add" size={28} color="#ffffff" />
-        </TouchableOpacity>
-      )}
-      {activeFilter === 'Recent' && (
-        <TouchableOpacity
-          style={styles.fab}
-          onPress={handleUploadAllPhotos}
-          activeOpacity={0.8}>
-          <Icon name="cloud-upload" size={28} color="#ffffff" />
         </TouchableOpacity>
       )}
 

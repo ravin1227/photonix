@@ -65,6 +65,7 @@ export default function PhotoViewerScreen() {
   const [showBottomBar, setShowBottomBar] = useState(true); // Always show bottom action bar
   const [allPhotos, setAllPhotos] = useState<Array<{id: number}>>([]); // All photos for navigation
   const [currentPhotoIndex, setCurrentPhotoIndex] = useState(-1); // Current photo index
+  const routePhotoListRef = useRef<Array<{id?: number; cloudId?: number; localUri?: string; isLocal?: boolean}>>([]); // Store route photo list
   const hideBarsTimerRef = useRef<ReturnType<typeof setTimeout> | null>(null);
 
   useEffect(() => {
@@ -99,7 +100,9 @@ export default function PhotoViewerScreen() {
       
       // Use route photo list if provided for navigation
       if (routePhotoList && routePhotoList.length > 0) {
-        setAllPhotos(routePhotoList.map(p => ({id: p.cloudId || p.id || 0})));
+        routePhotoListRef.current = routePhotoList;
+        // Create unique IDs for all photos (use index for local photos)
+        setAllPhotos(routePhotoList.map((p, index) => ({id: p.cloudId || p.id || index + 10000})));
         if (routeInitialIndex !== undefined && routeInitialIndex >= 0) {
           setCurrentPhotoIndex(routeInitialIndex);
         }
@@ -113,7 +116,9 @@ export default function PhotoViewerScreen() {
       
       // Use route photo list if provided, otherwise load all photos
       if (routePhotoList && routePhotoList.length > 0) {
-        setAllPhotos(routePhotoList.map(p => ({id: p.cloudId || p.id || 0})));
+        routePhotoListRef.current = routePhotoList;
+        // Create unique IDs for all photos (use index for local photos)
+        setAllPhotos(routePhotoList.map((p, index) => ({id: p.cloudId || p.id || index + 10000})));
         if (routeInitialIndex !== undefined && routeInitialIndex >= 0) {
           setCurrentPhotoIndex(routeInitialIndex);
         }
@@ -146,6 +151,31 @@ export default function PhotoViewerScreen() {
       }
     }
   }, [photo, photoId, allPhotos, currentPhotoIndex]);
+
+  // Handle route params updates for local photos
+  useEffect(() => {
+    const currentLocalUri = route.params?.localUri;
+    if (currentLocalUri && currentLocalUri !== localUri) {
+      // Route params updated, update local photo state
+      setIsLocalPhoto(true);
+      setIsLoadingPhoto(false);
+      setIsLoading(false);
+      setPhoto({
+        id: 0,
+        original_filename: route.params?.photoTitle || currentLocalUri?.split('/').pop() || 'Local Photo',
+        format: 'image/jpeg',
+        file_size: 0,
+        width: 0,
+        height: 0,
+        captured_at: null,
+        processing_status: 'completed',
+        thumbnail_urls: {},
+        created_at: new Date().toISOString(),
+        tags: [],
+        albums: [],
+      } as PhotoDetail);
+    }
+  }, [route.params?.localUri, route.params?.photoTitle, localUri]);
 
   // Auto-hide top bar after 3 seconds, but keep bottom action bar always visible
   useEffect(() => {
@@ -250,11 +280,11 @@ export default function PhotoViewerScreen() {
         setLoadError(errorMsg);
       }
     } catch (error: any) {
-      console.error('Error loading photo:', error);
+      console.error('[loadPhoto] Error loading photo:', error);
       setLoadError(error.message || 'Failed to load photo');
-    } finally {
       setIsLoadingPhoto(false);
     }
+    // Note: isLoadingPhoto will be set to false by AuthImage onLoad handler for successful loads
   };
 
   const showBarsTemporarily = () => {
@@ -270,37 +300,46 @@ export default function PhotoViewerScreen() {
   };
 
   const navigateToPhoto = (direction: 'next' | 'prev') => {
-    console.log('navigateToPhoto called:', direction);
-    console.log('allPhotos.length:', allPhotos.length, 'currentPhotoIndex:', currentPhotoIndex);
+    console.log('[navigateToPhoto] Called:', direction);
+    console.log('[navigateToPhoto] allPhotos.length:', allPhotos.length, 'currentPhotoIndex:', currentPhotoIndex);
+    console.log('[navigateToPhoto] routePhotoListRef.length:', routePhotoListRef.current.length);
+    console.log('[navigateToPhoto] routePhotoList.length:', routePhotoList?.length || 0);
+    console.log('[navigateToPhoto] isLocalPhoto:', isLocalPhoto, 'localUri:', localUri);
     
     // Ensure we have photos loaded
-    if (allPhotos.length === 0) {
-      console.log('No photos loaded, loading photos...');
-      if (routePhotoList && routePhotoList.length > 0) {
-        // Use route photo list
-        const photoList = routePhotoList.map(p => ({id: p.cloudId || p.id || 0}));
-        setAllPhotos(photoList);
-        if (routeInitialIndex !== undefined && routeInitialIndex >= 0) {
-          setCurrentPhotoIndex(routeInitialIndex);
-          setTimeout(() => navigateToPhoto(direction), 100);
-        }
-      } else {
-        loadAllPhotos().then(() => {
-          // After loading, try navigation again
-          setTimeout(() => navigateToPhoto(direction), 200);
-        });
+    const currentPhotoList = routePhotoListRef.current.length > 0 ? routePhotoListRef.current : routePhotoList || [];
+    if (allPhotos.length === 0 && currentPhotoList.length > 0) {
+      // Initialize allPhotos from route photo list
+      console.log('[navigateToPhoto] Initializing allPhotos from route photo list');
+      routePhotoListRef.current = currentPhotoList;
+      const photoList = currentPhotoList.map((p, index) => ({id: p.cloudId || p.id || index + 10000}));
+      setAllPhotos(photoList);
+      if (routeInitialIndex !== undefined && routeInitialIndex >= 0) {
+        setCurrentPhotoIndex(routeInitialIndex);
+        setTimeout(() => navigateToPhoto(direction), 100);
       }
+      return;
+    }
+    
+    if (allPhotos.length === 0) {
+      console.log('[navigateToPhoto] No photos in allPhotos, trying to load...');
+      loadAllPhotos().then(() => {
+        // After loading, try navigation again
+        setTimeout(() => navigateToPhoto(direction), 200);
+      });
       return;
     }
     
     // Find current index if not set
     let currentIndex = currentPhotoIndex;
     if (currentIndex === -1) {
+      // Try to use route initial index first
       if (routeInitialIndex !== undefined && routeInitialIndex >= 0) {
         currentIndex = routeInitialIndex;
         setCurrentPhotoIndex(currentIndex);
+        console.log('Using route initial index:', currentIndex);
       } else if (photoId) {
-        console.log('Current photo index not set, finding it...');
+        console.log('Current photo index not set, finding it by photoId...');
         currentIndex = allPhotos.findIndex(p => p.id === photoId);
         if (currentIndex === -1) {
           console.log('Current photo not found in list, using route index...');
@@ -316,8 +355,25 @@ export default function PhotoViewerScreen() {
           setCurrentPhotoIndex(currentIndex);
           console.log('Found current index:', currentIndex);
         }
+      } else if (isLocalPhoto && localUri) {
+        // For local photos, find by URI in route photo list
+        const photoListForUri = routePhotoListRef.current.length > 0 ? routePhotoListRef.current : routePhotoList || [];
+        const uriIndex = photoListForUri.findIndex(p => p.localUri === localUri);
+        if (uriIndex !== -1) {
+          currentIndex = uriIndex;
+          setCurrentPhotoIndex(currentIndex);
+          console.log('Found local photo index by URI:', currentIndex);
+        } else if (routeInitialIndex !== undefined && routeInitialIndex >= 0) {
+          currentIndex = routeInitialIndex;
+          setCurrentPhotoIndex(currentIndex);
+          console.log('Using route initial index for local photo:', currentIndex);
+        } else {
+          console.log('No valid index found for local photo, defaulting to 0');
+          currentIndex = 0;
+          setCurrentPhotoIndex(0);
+        }
       } else {
-        console.log('No photoId, defaulting to 0');
+        console.log('No photoId or localUri, defaulting to 0');
         currentIndex = 0;
         setCurrentPhotoIndex(0);
       }
@@ -345,19 +401,22 @@ export default function PhotoViewerScreen() {
     }
     
     console.log('Navigating to index:', newIndex);
-    
-    // Get photo info from route photo list if available
-    if (routePhotoList && routePhotoList[newIndex]) {
-      const nextPhoto = routePhotoList[newIndex];
+
+    // Get photo info from route photo list if available (reuse currentPhotoList from above)
+    if (currentPhotoList && currentPhotoList[newIndex]) {
+      const nextPhoto = currentPhotoList[newIndex];
       setCurrentPhotoIndex(newIndex);
       
       if (nextPhoto.isLocal && nextPhoto.localUri) {
         // Navigate to local photo
+        console.log('[navigateToPhoto] Navigating to local photo:', nextPhoto.localUri);
         setIsLocalPhoto(true);
-        setIsLoadingPhoto(false);
+        setIsLoadingPhoto(true); // Set loading to show transition
+        setIsLoading(false);
+        setImageError(false);
         setPhoto({
           id: 0,
-          original_filename: 'Local Photo',
+          original_filename: nextPhoto.localUri?.split('/').pop() || 'Local Photo',
           format: 'image/jpeg',
           file_size: 0,
           width: 0,
@@ -369,22 +428,32 @@ export default function PhotoViewerScreen() {
           tags: [],
           albums: [],
         } as PhotoDetail);
-        // Update route params for local photo
+        // Update route params for local photo - this will trigger re-render
+        // IMPORTANT: Preserve photoList and initialIndex to avoid losing navigation context
         navigation.setParams({
           localUri: nextPhoto.localUri,
           photoTitle: nextPhoto.localUri?.split('/').pop() || 'Local Photo',
           photoId: undefined,
+          photoList: routePhotoList,
+          initialIndex: newIndex,
         });
+        // Image onLoad will set isLoadingPhoto to false
       } else if (nextPhoto.cloudId || nextPhoto.id) {
         // Navigate to cloud photo
         setIsLocalPhoto(false);
         const newPhotoId = nextPhoto.cloudId || nextPhoto.id;
         if (newPhotoId) {
+          // Don't clear photo immediately - keep showing current photo while loading
+          // This prevents black screen during transition
+          setIsLoadingPhoto(true);
           loadPhoto(newPhotoId);
+          // IMPORTANT: Preserve photoList and initialIndex to avoid losing navigation context
           navigation.setParams({
             photoId: newPhotoId,
             localUri: undefined,
             photoTitle: undefined,
+            photoList: routePhotoList,
+            initialIndex: newIndex,
           });
         }
       }
@@ -401,9 +470,10 @@ export default function PhotoViewerScreen() {
   };
 
   const getImageUrl = (): string => {
-    // If local photo, return local URI directly
-    if (isLocalPhoto && localUri) {
-      return localUri;
+    // If local photo, return local URI directly (use route params to get updated value)
+    const currentLocalUri = route.params?.localUri || localUri;
+    if (isLocalPhoto && currentLocalUri) {
+      return currentLocalUri;
     }
     
     if (!photo) return '';
@@ -465,9 +535,10 @@ export default function PhotoViewerScreen() {
 
     try {
       let imageUrl: string;
-      if (isLocalPhoto && localUri) {
+      const currentLocalUri = route.params?.localUri || localUri;
+      if (isLocalPhoto && currentLocalUri) {
         // Share local photo
-        imageUrl = localUri;
+        imageUrl = currentLocalUri;
       } else {
         // Share server photo
         const baseUrl = API_CONFIG.BASE_URL.replace('/api/v1', '');
@@ -589,11 +660,15 @@ export default function PhotoViewerScreen() {
       PanResponder.create({
         onStartShouldSetPanResponder: () => {
           // Enable for any photos that have navigation available
-          return allPhotos.length > 1;
+          const currentPhotoList = routePhotoListRef.current.length > 0 ? routePhotoListRef.current : routePhotoList || [];
+          const hasPhotos = allPhotos.length > 1 || currentPhotoList.length > 1;
+          console.log('[PanResponder] Should enable:', hasPhotos, 'allPhotos:', allPhotos.length, 'routePhotoList:', currentPhotoList.length);
+          return hasPhotos;
         },
         onMoveShouldSetPanResponder: (evt, gestureState) => {
           // Don't intercept if no photos to navigate
-          if (allPhotos.length <= 1) return false;
+          const currentPhotoList = routePhotoListRef.current.length > 0 ? routePhotoListRef.current : routePhotoList || [];
+          if (allPhotos.length <= 1 && currentPhotoList.length <= 1) return false;
           
           // Don't intercept touches in the top bar area (first 100px) or bottom bar area
           const {locationY} = evt.nativeEvent;
@@ -620,7 +695,11 @@ export default function PhotoViewerScreen() {
         },
         onPanResponderRelease: (evt, gestureState) => {
           // Don't process if no photos to navigate
-          if (allPhotos.length <= 1) return;
+          const currentPhotoList = routePhotoListRef.current.length > 0 ? routePhotoListRef.current : routePhotoList || [];
+          if (allPhotos.length <= 1 && currentPhotoList.length <= 1) {
+            console.log('[PanResponder] Not enough photos to navigate');
+            return;
+          }
           
           const {dx, dy} = gestureState;
           const absDx = Math.abs(dx);
@@ -697,8 +776,8 @@ export default function PhotoViewerScreen() {
           <View
             style={styles.imageContainer}
             {...panResponder.panHandlers}>
-            {isLoadingPhoto && !photo ? (
-              // Show skeleton loader while loading photo data
+            {isLoadingPhoto && !photo && !isLocalPhoto && !route.params?.localUri && !localUri ? (
+              // Show skeleton loader only when loading cloud photo and no photo exists and no local URI
               <View style={styles.skeletonContainer}>
                 <View style={styles.skeletonImage} />
                 <View style={styles.skeletonOverlay}>
@@ -706,7 +785,7 @@ export default function PhotoViewerScreen() {
                   <Text style={styles.skeletonText}>Loading photo...</Text>
                 </View>
               </View>
-            ) : getImageUrl() && photo ? (
+            ) : getImageUrl() && (photo || (isLocalPhoto && (route.params?.localUri || localUri))) ? (
               <TouchableOpacity
                 style={styles.imageTouchable}
                 activeOpacity={1}
@@ -714,15 +793,41 @@ export default function PhotoViewerScreen() {
                 delayPressIn={200}>
                 {isLocalPhoto ? (
                   <Image
+                    key={`local_${route.params?.localUri || localUri}_${currentPhotoIndex}`} // Force re-render when URI or index changes
                     source={{uri: getImageUrl()}}
                     style={styles.fullImage}
                     resizeMode="contain"
+                    onLoadStart={() => {
+                      console.log('[Image] Loading local photo:', getImageUrl());
+                    }}
+                    onLoad={() => {
+                      console.log('[Image] Local photo loaded');
+                      setIsLoadingPhoto(false);
+                    }}
+                    onError={(error) => {
+                      console.error('[Image] Local photo error:', error);
+                      setImageError(true);
+                      setIsLoadingPhoto(false);
+                    }}
                   />
                 ) : (
                   <AuthImage
+                    key={`cloud_${photo?.id}_${currentPhotoIndex}`} // Force re-render when photo ID or index changes
                     source={{uri: getImageUrl()}}
                     style={styles.fullImage}
                     resizeMode="contain"
+                    onLoadStart={() => {
+                      console.log('[AuthImage] Loading cloud photo:', getImageUrl());
+                    }}
+                    onLoad={() => {
+                      console.log('[AuthImage] Cloud photo loaded');
+                      setIsLoadingPhoto(false);
+                    }}
+                    onError={(error) => {
+                      console.error('[AuthImage] Cloud photo error:', error);
+                      setImageError(true);
+                      setIsLoadingPhoto(false);
+                    }}
                   />
                 )}
               </TouchableOpacity>

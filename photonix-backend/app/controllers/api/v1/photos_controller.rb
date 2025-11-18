@@ -68,6 +68,12 @@ module Api
               full_path = PhotoStorageService.original_path(storage_info[:file_path])
               exif_data = ExifExtractionService.extract(full_path)
 
+              # Use captured_at from params if provided and EXIF didn't extract it
+              if exif_data[:captured_at].nil? && params[:captured_at].present?
+                exif_data[:captured_at] = params[:captured_at]
+                Rails.logger.info "Using captured_at from params: #{params[:captured_at]}"
+              end
+
               # Create photo record
               photo = current_user.photos.new(
                 original_filename: uploaded_file.original_filename,

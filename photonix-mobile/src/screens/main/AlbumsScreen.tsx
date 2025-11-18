@@ -52,12 +52,20 @@ export default function AlbumsScreen() {
   const loadDeviceAlbums = async () => {
     setIsLoadingDeviceAlbums(true);
     try {
+      console.log('[AlbumsScreen] Loading device albums...');
       const albums = await devicePhotoService.getAlbums();
+      console.log('[AlbumsScreen] Loaded device albums:', albums.length);
       setDeviceAlbums(albums);
     } catch (error: any) {
-      console.error('Error loading device albums:', error);
-      // Don't show error to user, just log it
-      // User might not have granted permission yet
+      console.error('[AlbumsScreen] Error loading device albums:', error.message);
+      // Show alert if permission denied
+      if (error.message && error.message.includes('permission')) {
+        Alert.alert(
+          'Photo Access Required',
+          'Please allow Photonix to access your photos in Settings > Photonix > Photos',
+          [{text: 'OK'}]
+        );
+      }
       setDeviceAlbums([]);
     } finally {
       setIsLoadingDeviceAlbums(false);

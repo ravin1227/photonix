@@ -1,4 +1,4 @@
-import React, {useState, useEffect, useRef} from 'react';
+import React, {useState, useEffect, useRef, useMemo, useCallback} from 'react';
 import {
   View,
   Text,
@@ -8,6 +8,7 @@ import {
   ActivityIndicator,
   RefreshControl,
   Alert,
+  FlatList,
 } from 'react-native';
 import {SafeAreaView} from 'react-native-safe-area-context';
 import {useNavigation, useRoute, RouteProp} from '@react-navigation/native';
@@ -65,10 +66,12 @@ export default function HomeScreen() {
   const [hasMorePhotos, setHasMorePhotos] = useState(true);
   const [isLoadingMore, setIsLoadingMore] = useState(false);
   const [preloadedPhotos, setPreloadedPhotos] = useState<Photo[]>([]); // Buffer for next page
+  const [preloadedPhotosPage2, setPreloadedPhotosPage2] = useState<Photo[]>([]); // Buffer for page after next
   const [isPreloading, setIsPreloading] = useState(false);
   const [isMerging, setIsMerging] = useState(false); // Track merge status
   const PER_PAGE = 50; // Load 50 photos at a time
   const PRELOAD_THRESHOLD = 20; // Preload when 20 photos from bottom
+  const PRELOAD_PAGES_AHEAD = 2; // Preload 2 pages ahead for smooth scrolling
   
   // Track if component is mounted to prevent state updates after unmount
   const isMountedRef = useRef(true);
@@ -90,15 +93,43 @@ export default function HomeScreen() {
     }
   }, [activeFilter]);
 
+  // Get merged photos grouped by date (Google Photos style) - Memoized for performance
+  // Moved here so it can be used in useEffect hooks below
+  const getMergedPhotosByDate = useMemo(() => {
+    const grouped = photoMergeService.groupPhotosByDate(mergedPhotos);
+
+    return Array.from(grouped.entries())
+      .sort((a, b) => new Date(b[0]).getTime() - new Date(a[0]).getTime())
+      .map(([date, photos]) => ({
+        date,
+        dateHeader: photoMergeService.formatDateHeader(date),
+        photos,
+      }));
+  }, [mergedPhotos]);
+
+  // Memoize flattened photo list for navigation (computed once, reused)
+  const allMergedPhotosForNavigation = useMemo(() => {
+    return getMergedPhotosByDate.flatMap(({photos}) => photos);
+  }, [getMergedPhotosByDate]);
+
+  // Memoize photo list for navigation (computed once, reused)
+  const photoListForNavigation = useMemo(() => {
+    return allMergedPhotosForNavigation.map(p => ({
+      id: p.cloudId,
+      cloudId: p.cloudId,
+      localUri: p.isLocal ? p.uri : undefined,
+      isLocal: p.isLocal,
+    }));
+  }, [allMergedPhotosForNavigation]);
+
   // Check upload status for dates when photos are loaded
   useEffect(() => {
     if (photos.length > 0 && activeFilter === 'Recent') {
-      const mergedDates = getMergedPhotosByDate();
-      mergedDates.forEach(({date}) => {
+      getMergedPhotosByDate.forEach(({date}) => {
         checkDateUploadStatus(date);
       });
     }
-  }, [photos, devicePhotos, activeFilter]);
+  }, [photos, devicePhotos, activeFilter, getMergedPhotosByDate]);
 
   // Handle photo deletion from PhotoViewerScreen
   useEffect(() => {
@@ -132,7 +163,8 @@ export default function HomeScreen() {
         setIsLoading(true);
         setCurrentPage(1);
         setHasMorePhotos(true);
-        setPreloadedPhotos([]); // Clear preload buffer on fresh load
+        setPreloadedPhotos([]); // Clear preload buffers on fresh load
+        setPreloadedPhotosPage2([]);
       } else {
         setIsLoadingMore(true);
       }
@@ -154,8 +186,9 @@ export default function HomeScreen() {
       const allCloudPhotos = append ? [...photos, ...cloudPhotos] : cloudPhotos;
       setPhotos(allCloudPhotos);
 
-      // PHASE 2: Show cloud photos INSTANTLY (no merge blocking)
-      console.log('[HomeScreen] Showing cloud photos instantly...');
+      // PHASE 2: Show THUMBNAILS INSTANTLY (no merge blocking)
+      // Convert cloud photos to merged format with thumbnails for instant display
+      console.log('[HomeScreen] Showing thumbnails instantly from backend...');
       const instantMerged = photoMergeService.cloudPhotosToMerged(cloudPhotos);
       
       if (append && page > 1) {
@@ -169,12 +202,12 @@ export default function HomeScreen() {
           );
         });
       } else {
-        // Replace with new photos
+        // Replace with new photos (instant thumbnails display)
         setMergedPhotos(instantMerged);
       }
 
       // PHASE 3: Merge with local photos in BACKGROUND (non-blocking)
-      // Only merge if not already merging to prevent crashes
+      // This happens while user sees thumbnails, then updates UI when ready
       if (!isMerging) {
         setIsMerging(true);
         console.log('[HomeScreen] Starting background merge with local photos...');
@@ -191,7 +224,7 @@ export default function HomeScreen() {
               uploaded: fullyMerged.filter(p => p.syncStatus === 'uploaded').length,
               localOnly: fullyMerged.filter(p => p.syncStatus === 'local_only').length,
             });
-            
+
             // Safely update with fully merged photos (includes local photos)
             // Only update if component is still mounted and active filter is Recent
             if (activeFilter === 'Recent' && isMountedRef.current) {
@@ -209,8 +242,13 @@ export default function HomeScreen() {
 
       setCurrentPage(page);
 
-      // PHASE 4: Always preload next page if available (keep 50 photos in backup)
-      if (hasMore && !isPreloading && preloadedPhotos.length === 0) {
+      // PHASE 4: Preload next 2 pages for smooth scrolling
+      // Preload page 2 and page 3 in parallel for instant loading
+      if (page === 1 && hasMore && !isPreloading) {
+        console.log('[HomeScreen] Preloading next 2 pages for smooth scrolling...');
+        preloadNextPages([page + 1, page + 2]);
+      } else if (hasMore && !isPreloading && preloadedPhotos.length === 0) {
+        // For subsequent pages, preload next page
         preloadNextPage(page + 1);
       }
 
@@ -274,18 +312,64 @@ export default function HomeScreen() {
   };
 
   /**
+   * Preload multiple pages in parallel (for initial load)
+   * Preloads next 2 pages for smooth scrolling experience
+   */
+  const preloadNextPages = async (pages: number[]) => {
+    if (isPreloading || !hasMorePhotos) return;
+    
+    try {
+      setIsPreloading(true);
+      console.log(`[HomeScreen] Preloading pages ${pages.join(', ')} in parallel...`);
+      
+      // Load all pages in parallel
+      const preloadPromises = pages.map(async (page, index) => {
+        try {
+          const response = await photoService.getPhotos(page, PER_PAGE);
+          const preloaded = response.data?.photos || [];
+          
+          if (preloaded.length > 0) {
+            console.log(`[HomeScreen] Preloaded ${preloaded.length} photos for page ${page}`);
+            
+            // Store in appropriate buffer
+            if (index === 0) {
+              setPreloadedPhotos(preloaded);
+            } else if (index === 1) {
+              setPreloadedPhotosPage2(preloaded);
+            }
+            
+            return preloaded;
+          }
+          return [];
+        } catch (error) {
+          console.error(`[HomeScreen] Error preloading page ${page}:`, error);
+          return [];
+        }
+      });
+      
+      await Promise.all(preloadPromises);
+      console.log('[HomeScreen] Finished preloading next pages');
+    } catch (error) {
+      console.error('[HomeScreen] Preload error:', error);
+    } finally {
+      setIsPreloading(false);
+    }
+  };
+
+  /**
    * Load more photos - uses preloaded buffer if available
+   * Supports 2-page preload buffer for ultra-smooth scrolling
    */
   const loadMorePhotos = () => {
     if (!isLoadingMore && hasMorePhotos && !isLoading) {
       const nextPage = currentPage + 1;
       
-      // Check if we have preloaded photos
+      // Check if we have preloaded photos (page 2 buffer)
       if (preloadedPhotos.length > 0) {
-        console.log('[HomeScreen] Using preloaded photos, next page:', nextPage);
+        console.log('[HomeScreen] Using preloaded photos buffer, next page:', nextPage);
         setIsLoadingMore(true);
         
-        // Use preloaded photos instantly
+        // Use preloaded photos instantly (show thumbnails immediately)
         const instantMerged = photoMergeService.cloudPhotosToMerged(preloadedPhotos);
         
         // Update photos state
@@ -322,7 +406,7 @@ export default function HomeScreen() {
           return updated;
         });
         
-        // Update merged photos instantly
+        // Update merged photos instantly with thumbnails
         setMergedPhotos(prev => {
           const existingIds = new Set(prev.map(p => p.id));
           const newPhotos = instantMerged.filter(p => !existingIds.has(p.id));
@@ -332,10 +416,13 @@ export default function HomeScreen() {
         });
         
         setCurrentPage(nextPage);
-        setPreloadedPhotos([]); // Clear buffer after use
         
-        // Immediately preload next page (keep 50 photos in backup)
-        if (hasMorePhotos && !isPreloading) {
+        // Move page 3 buffer to page 2 buffer, then preload new page 3
+        setPreloadedPhotos(preloadedPhotosPage2);
+        setPreloadedPhotosPage2([]);
+        
+        // Immediately preload next page (keep 2 pages in backup)
+        if (hasMorePhotos && !isPreloading && nextPage + 1 <= currentPage + PRELOAD_PAGES_AHEAD) {
           preloadNextPage(nextPage + 1);
         }
       } else {
@@ -711,13 +798,41 @@ export default function HomeScreen() {
       }));
 
       let uploadedCount = 0;
+      const tempFilesToCleanup: string[] = []; // Track temporary files for cleanup
 
       for (const photo of localPhotos) {
-        if (!photo.originalUri) continue;
+        let photoUri = photo.originalUri || photo.uri;
+        if (!photoUri) {
+          console.warn('[HomeScreen] Skipping photo without URI:', photo.filename);
+          continue;
+        }
+
+        // Convert ph:// URIs to file:// URIs for iOS uploads
+        let tempFileUri: string | null = null;
+        if (photoUri.startsWith('ph://')) {
+          try {
+            // Lazy import react-native-fs only when needed (iOS ph:// URI conversion)
+            const RNFS = require('react-native-fs').default;
+            if (!RNFS) {
+              console.warn('[HomeScreen] react-native-fs not available, skipping ph:// conversion');
+              continue;
+            }
+            const fileExtension = photo.filename.split('.').pop() || 'jpg';
+            const tempFileName = `photonix_upload_${Date.now()}_${Math.random().toString(36).substring(7)}.${fileExtension}`;
+            const destPath = `${RNFS.TemporaryDirectoryPath}/${tempFileName}`;
+            await RNFS.copyAssetsFileIOS(photoUri, destPath, 0, 0);
+            tempFileUri = `file://${destPath}`;
+            tempFilesToCleanup.push(destPath);
+            photoUri = tempFileUri;
+          } catch (error: any) {
+            console.error('[HomeScreen] Error converting ph:// URI to file URI:', error);
+            continue;
+          }
+        }
 
         const file = {
-          uri: photo.originalUri,
-          type: 'image/jpeg', // TODO: Get actual type
+          uri: photoUri,
+          type: 'image/jpeg',
           name: photo.filename,
         };
 
@@ -726,8 +841,11 @@ export default function HomeScreen() {
         const result = await photoService.uploadPhoto(file, capturedAt);
 
         if (result.data?.photo) {
+          const cloudId = result.data.photo.id;
+          const cloudPhotoData = result.data.photo;
+          
           // Track the upload
-          await uploadTracker.markAsUploaded(photo.originalUri, result.data.photo.id);
+          await uploadTracker.markAsUploaded(photo.originalUri || photo.uri, cloudId);
           uploadedCount++;
 
           // Update progress
@@ -736,7 +854,90 @@ export default function HomeScreen() {
             [date]: {isUploading: true, uploaded: uploadedCount, total: localPhotos.length},
           }));
 
-          console.log('[HomeScreen] Uploaded and tracked:', photo.filename, '→', result.data.photo.id, `(${uploadedCount}/${localPhotos.length})`);
+          // Update mergedPhotos state in-place to change icon from cloud to checkmark
+          setMergedPhotos(prev => prev.map(p => {
+            const photoUriToCheck = p.originalUri || p.uri;
+            if (photoUriToCheck === (photo.originalUri || photo.uri) && p.syncStatus === 'local_only' && result.data?.photo) {
+              // Get cloud thumbnail URI, but keep local URI as fallback if thumbnails aren't ready yet
+              const cloudThumbnailUri = photoMergeService.getCloudPhotoUri(cloudPhotoData);
+              const displayUri = cloudThumbnailUri || p.uri; // Use cloud thumbnail if available, otherwise keep local URI
+              
+              // Update this photo to show as uploaded
+              const updatedPhoto = {
+                ...p,
+                syncStatus: 'uploaded' as const,
+                isUploaded: true,
+                cloudId: cloudId,
+                cloudData: cloudPhotoData,
+                // Update URI to use cloud thumbnail if available, otherwise keep local URI
+                uri: displayUri,
+                // Keep originalUri for reference
+                originalUri: p.originalUri || p.uri,
+              };
+
+              // Immediately fetch photo details to get thumbnails (retry if not ready)
+              const fetchThumbnails = async (retryCount = 0) => {
+                try {
+                  const photoDetailResponse = await photoService.getPhoto(cloudId);
+                  if (photoDetailResponse.data?.photo) {
+                    const updatedCloudPhoto = photoDetailResponse.data.photo;
+                    const updatedThumbnailUri = photoMergeService.getCloudPhotoUri(updatedCloudPhoto);
+                    
+                    // Update the photo with new thumbnail URI if available
+                    if (updatedThumbnailUri) {
+                      setMergedPhotos(prev => prev.map(prevPhoto => {
+                        if (prevPhoto.cloudId === cloudId && prevPhoto.syncStatus === 'uploaded') {
+                          return {
+                            ...prevPhoto,
+                            uri: updatedThumbnailUri,
+                            cloudData: updatedCloudPhoto,
+                          };
+                        }
+                        return prevPhoto;
+                      }));
+                    } else if (updatedCloudPhoto.processing_status !== 'completed' && retryCount < 5) {
+                      // If still processing and haven't retried too many times, retry after delay
+                      setTimeout(() => fetchThumbnails(retryCount + 1), 2000);
+                    }
+                  }
+                } catch (error) {
+                  console.error('[HomeScreen] Error fetching updated photo details:', error);
+                  // Retry if we haven't tried too many times
+                  if (retryCount < 3) {
+                    setTimeout(() => fetchThumbnails(retryCount + 1), 2000);
+                  }
+                }
+              };
+
+              // Start fetching thumbnails immediately
+              fetchThumbnails();
+
+              return updatedPhoto;
+            }
+            return p;
+          }));
+
+          console.log('[HomeScreen] Uploaded and tracked:', photo.filename, '→', cloudId, `(${uploadedCount}/${localPhotos.length})`);
+        }
+      }
+
+      // Clean up temporary files
+      if (tempFilesToCleanup.length > 0) {
+        try {
+          // Lazy import react-native-fs only when needed
+          const RNFS = require('react-native-fs').default;
+          if (RNFS) {
+            for (const tempFilePath of tempFilesToCleanup) {
+              try {
+                await RNFS.unlink(tempFilePath);
+                console.log('[HomeScreen] Cleaned up temporary file:', tempFilePath);
+              } catch (cleanupError) {
+                console.error('[HomeScreen] Error cleaning up temporary file:', tempFilePath, cleanupError);
+              }
+            }
+          }
+        } catch (error) {
+          console.warn('[HomeScreen] react-native-fs not available for cleanup:', error);
         }
       }
 
@@ -746,9 +947,8 @@ export default function HomeScreen() {
         [date]: {isUploading: false, uploaded: uploadedCount, total: localPhotos.length},
       }));
 
-      // Reload photos after upload
-      await loadPhotos();
-      Alert.alert('Success', `Uploaded ${uploadedCount} photo(s)`);
+      // No need to reload photos - we've updated them in-place
+      // No success alert - icons update automatically
     } catch (error: any) {
       console.error('[HomeScreen] Error uploading local photos:', error);
       // Set error state
@@ -786,18 +986,6 @@ export default function HomeScreen() {
     return grouped;
   };
 
-  // Get merged photos grouped by date (Google Photos style)
-  const getMergedPhotosByDate = () => {
-    const grouped = photoMergeService.groupPhotosByDate(mergedPhotos);
-
-    return Array.from(grouped.entries())
-      .sort((a, b) => new Date(b[0]).getTime() - new Date(a[0]).getTime())
-      .map(([date, photos]) => ({
-        date,
-        dateHeader: photoMergeService.formatDateHeader(date),
-        photos,
-      }));
-  };
 
   // Get thumbnail URL - prioritizing small thumbnails (200px) for the grid
   const getThumbnailUrl = (photo: Photo): string => {
@@ -842,9 +1030,7 @@ export default function HomeScreen() {
       );
     }
 
-    const mergedDates = getMergedPhotosByDate();
-
-    if (mergedDates.length === 0 && !isLoading && !isLoadingDevicePhotos) {
+    if (getMergedPhotosByDate.length === 0 && !isLoading && !isLoadingDevicePhotos) {
       return (
         <View style={styles.emptyContainer}>
           <Text style={styles.emptyText}>No photos yet</Text>
@@ -855,7 +1041,7 @@ export default function HomeScreen() {
 
     return (
       <>
-        {mergedDates.map(({date, dateHeader, photos}) => {
+        {getMergedPhotosByDate.map(({date, dateHeader, photos}) => {
           const uploadState = uploadingDates[date];
           const localOnlyPhotos = photos.filter(p => p.syncStatus === 'local_only');
           const hasLocalPhotos = localOnlyPhotos.length > 0;
@@ -878,34 +1064,23 @@ export default function HomeScreen() {
               </View>
               <View style={styles.grid}>
               {/* Render all merged photos (deduplicated, sorted by capture date) */}
-              {photos.map((photo: MergedPhoto) => {
+              {photos.map((photo: MergedPhoto, index: number) => {
                 const isLocalOnly = photo.syncStatus === 'local_only';
                 const isUploaded = photo.syncStatus === 'uploaded';
 
                 return (
-                  <View key={photo.id} style={styles.photoThumbnail}>
+                  <View key={`${photo.id}_${index}_${photo.uri}`} style={styles.photoThumbnail}>
                     <TouchableOpacity
                       style={styles.photoTouchable}
                       onPress={() => {
-                        // Get all merged photos for swipe navigation
-                        const allMergedPhotos = getMergedPhotosByDate().flatMap(({photos}) => photos);
-                        
-                        // Find current photo index
-                        const currentIndex = allMergedPhotos.findIndex(p => p.id === photo.id);
-                        
-                        // Prepare photo list for navigation
-                        const photoList = allMergedPhotos.map(p => ({
-                          id: p.cloudId,
-                          cloudId: p.cloudId,
-                          localUri: p.isLocal ? p.uri : undefined,
-                          isLocal: p.isLocal,
-                        }));
+                        // Use memoized photo list (already computed, no recalculation)
+                        const currentIndex = allMergedPhotosForNavigation.findIndex(p => p.id === photo.id);
                         
                         // For uploaded photos, open in viewer with cloud ID
                         if (photo.cloudId) {
                           navigation.navigate('PhotoViewer', {
                             photoId: photo.cloudId,
-                            photoList,
+                            photoList: photoListForNavigation,
                             initialIndex: currentIndex >= 0 ? currentIndex : 0,
                           });
                         } else {
@@ -913,25 +1088,40 @@ export default function HomeScreen() {
                           navigation.navigate('PhotoViewer', {
                             localUri: photo.uri,
                             photoTitle: photo.filename,
-                            photoList,
+                            photoList: photoListForNavigation,
                             initialIndex: currentIndex >= 0 ? currentIndex : 0,
                           });
                         }
                       }}>
-                      {/* Use AuthImage for cloud photos, Image for local photos */}
-                      {isUploaded && photo.uri ? (
+                      {/* Use AuthImage for cloud photos with thumbnails, Image for local photos or fallback */}
+                      {(() => {
+                        // Determine which image to show
+                        const hasCloudThumbnail = isUploaded && photo.cloudId && photo.uri && photo.uri.startsWith('http');
+                        const localUri = photo.originalUri || photo.uri;
+                        
+                        if (hasCloudThumbnail) {
+                          // Use AuthImage for cloud thumbnails, with local fallback
+                          return (
                         <AuthImage
+                              key={`cloud_${photo.cloudId}_${photo.uri}`} // Force re-render when URI changes
                           source={{uri: photo.uri}}
+                              fallbackSource={localUri ? {uri: localUri} : undefined}
                           style={styles.photoImage}
                           resizeMode="cover"
                         />
-                      ) : (
+                          );
+                        } else {
+                          // Use local image (either local-only or fallback for uploaded photos without thumbnails)
+                          return (
                         <Image
-                          source={{uri: photo.uri}}
+                              key={`local_${photo.id}_${localUri}`} // Force re-render when URI changes
+                              source={{uri: localUri || ''}}
                           style={styles.photoImage}
                           resizeMode="cover"
                         />
-                      )}
+                          );
+                        }
+                      })()}
                     </TouchableOpacity>
                     {/* Sync status indicator */}
                     <View style={styles.photoStatusIndicator}>

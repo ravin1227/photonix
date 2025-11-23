@@ -76,6 +76,15 @@ export default function AuthImage({source, fallbackSource, style, ...props}: Aut
           }
           console.error(`AuthImage error: ${response.status} ${response.statusText}`, errorMessage);
           clearTimeout(timeoutId);
+          
+          // If 404 and we have a fallback source, use it instead of showing error
+          if (response.status === 404 && fallbackSource) {
+            console.log('AuthImage: 404 error, falling back to local image');
+            setImageUri((fallbackSource as any).uri);
+            setIsLoading(false);
+            return;
+          }
+          
           setError(true);
           setIsLoading(false);
           return;

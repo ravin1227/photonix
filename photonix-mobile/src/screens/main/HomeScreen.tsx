@@ -1,4 +1,4 @@
-import React, {useState, useEffect, useRef, useMemo, useCallback} from 'react';
+import React, {useState, useEffect, useRef, useMemo, useCallback, memo} from 'react';
 import {
   View,
   Text,
@@ -33,6 +33,7 @@ import {Image} from 'react-native';
 import photoMergeService, {MergedPhoto} from '../../services/photoMergeService';
 import uploadTracker from '../../services/uploadTracker';
 import NetworkStatusBanner from '../../components/NetworkStatusBanner';
+import {calculateFileHashes} from '../../utils/hashUtils';
 
 type FilterType = 'Recent' | 'People' | 'Albums';
 
@@ -42,6 +43,72 @@ type HomeScreenNavigationProp = NativeStackNavigationProp<
 >;
 
 type HomeScreenRouteProp = RouteProp<HomeStackParamList, 'HomeList'>;
+
+// Memoized PhotoThumbnail component to prevent unnecessary re-renders
+// This is the React Native equivalent of Flutter's RepaintBoundary
+interface PhotoThumbnailProps {
+  photo: MergedPhoto;
+  index: number;
+  onPress: (photo: MergedPhoto, index: number) => void;
+}
+
+const PhotoThumbnail = memo<PhotoThumbnailProps>(({photo, index, onPress}) => {
+  const isLocalOnly = photo.syncStatus === 'local_only';
+  const isUploaded = photo.syncStatus === 'uploaded';
+  const hasCloudThumbnail = isUploaded && photo.cloudId && photo.uri && photo.uri.startsWith('http');
+  const localUri = photo.originalUri || photo.uri;
+
+  return (
+    <View key={`${photo.id}_${index}_${photo.uri}`} style={styles.photoThumbnail}>
+      <TouchableOpacity
+        style={styles.photoTouchable}
+        onPress={() => onPress(photo, index)}
+        activeOpacity={0.8}>
+        {/* Use AuthImage for cloud photos with thumbnails, Image for local photos or fallback */}
+        {hasCloudThumbnail ? (
+          <AuthImage
+            key={`cloud_${photo.cloudId}_${photo.uri}`}
+            source={{uri: photo.uri}}
+            fallbackSource={localUri ? {uri: localUri} : undefined}
+            style={styles.photoImage}
+            resizeMode="cover"
+          />
+        ) : (
+          <Image
+            key={`local_${photo.id}_${localUri}`}
+            source={{uri: localUri || ''}}
+            style={styles.photoImage}
+            resizeMode="cover"
+          />
+        )}
+      </TouchableOpacity>
+      {/* Sync status indicator */}
+      <View style={styles.photoStatusIndicator}>
+        {isLocalOnly && (
+          <Icon name="cloud-upload-outline" size={18} color="#ffffff" />
+        )}
+        {isUploaded && (
+          <PhotoUploadStatus isUploaded={true} size={18} />
+        )}
+      </View>
+    </View>
+  );
+}, (prevProps, nextProps) => {
+  // Custom comparison function - only re-render if photo data actually changed
+  const prev = prevProps.photo;
+  const next = nextProps.photo;
+  
+  return (
+    prev.id === next.id &&
+    prev.uri === next.uri &&
+    prev.syncStatus === next.syncStatus &&
+    prev.cloudId === next.cloudId &&
+    prev.originalUri === next.originalUri &&
+    prevProps.index === nextProps.index
+  );
+});
+
+PhotoThumbnail.displayName = 'PhotoThumbnail';
 
 export default function HomeScreen() {
   const navigation = useNavigation<HomeScreenNavigationProp>();
@@ -436,6 +503,8 @@ export default function HomeScreen() {
   const onRefresh = () => {
     setIsRefreshing(true);
     if (activeFilter === 'Recent') {
+      // Clear local photos cache to ensure we get all device photos
+      photoMergeService.clearCache();
       loadPhotos(); // Now includes merging with device photos
     } else if (activeFilter === 'Albums') {
       loadAlbums();
@@ -789,7 +858,7 @@ export default function HomeScreen() {
     const date = localPhotos[0].capturedAt.toISOString().split('T')[0];
 
     try {
-      console.log('[HomeScreen] Uploading', localPhotos.length, 'local photos for date', date);
+      console.log('[HomeScreen] Starting hash-based deduplication for', localPhotos.length, 'photos');
 
       // Set initial uploading state
       setUploadingDates(prev => ({
@@ -797,8 +866,9 @@ export default function HomeScreen() {
         [date]: {isUploading: true, uploaded: 0, total: localPhotos.length},
       }));
 
-      let uploadedCount = 0;
-      const tempFilesToCleanup: string[] = []; // Track temporary files for cleanup
+      // STEP 1: Prepare photo URIs (convert ph:// to file:// for iOS)
+      const photosWithUris: Array<{photo: MergedPhoto; uri: string; tempFilePath?: string}> = [];
+      const tempFilesToCleanup: string[] = [];
 
       for (const photo of localPhotos) {
         let photoUri = photo.originalUri || photo.uri;
@@ -808,30 +878,162 @@ export default function HomeScreen() {
         }
 
         // Convert ph:// URIs to file:// URIs for iOS uploads
-        let tempFileUri: string | null = null;
+        let tempFilePath: string | undefined;
         if (photoUri.startsWith('ph://')) {
           try {
-            // Lazy import react-native-fs only when needed (iOS ph:// URI conversion)
             const RNFS = require('react-native-fs').default;
             if (!RNFS) {
               console.warn('[HomeScreen] react-native-fs not available, skipping ph:// conversion');
               continue;
             }
             const fileExtension = photo.filename.split('.').pop() || 'jpg';
-            const tempFileName = `photonix_upload_${Date.now()}_${Math.random().toString(36).substring(7)}.${fileExtension}`;
+            const tempFileName = `photonix_hash_${Date.now()}_${Math.random().toString(36).substring(7)}.${fileExtension}`;
             const destPath = `${RNFS.TemporaryDirectoryPath}/${tempFileName}`;
             await RNFS.copyAssetsFileIOS(photoUri, destPath, 0, 0);
-            tempFileUri = `file://${destPath}`;
+            tempFilePath = destPath;
             tempFilesToCleanup.push(destPath);
-            photoUri = tempFileUri;
+            photoUri = `file://${destPath}`;
           } catch (error: any) {
             console.error('[HomeScreen] Error converting ph:// URI to file URI:', error);
             continue;
           }
         }
 
+        photosWithUris.push({photo, uri: photoUri, tempFilePath});
+      }
+
+      if (photosWithUris.length === 0) {
+        console.warn('[HomeScreen] No valid photos to upload');
+        setUploadingDates(prev => ({
+          ...prev,
+          [date]: {isUploading: false, uploaded: 0, total: 0},
+        }));
+        return;
+      }
+
+      // STEP 2: Calculate SHA-1 hashes for all photos (keep temp files for ph:// URIs)
+      console.log('[HomeScreen] Calculating SHA-1 hashes for', photosWithUris.length, 'photos...');
+      const photoUris = photosWithUris.map(p => p.uri);
+      const hashResults = await calculateFileHashes(photoUris, true); // Keep temp files for reuse
+      
+      // Combine hash results with photo data
+      const photosWithHashes: Array<{
+        photo: MergedPhoto;
+        uri: string;
+        tempFilePath?: string;
+        hash: string;
+      }> = [];
+      
+      for (let i = 0; i < photosWithUris.length; i++) {
+        const hashResult = hashResults[i];
+        if (hashResult && hashResult.hash) {
+          // Use temp file from hash calculation if available, otherwise use existing temp file
+          const tempFilePath = hashResult.tempFilePath || photosWithUris[i].tempFilePath;
+          photosWithHashes.push({
+            ...photosWithUris[i],
+            hash: hashResult.hash,
+            tempFilePath: tempFilePath || photosWithUris[i].tempFilePath,
+            uri: hashResult.tempFilePath ? `file://${hashResult.tempFilePath}` : photosWithUris[i].uri,
+          });
+        }
+      }
+
+      console.log('[HomeScreen] Successfully hashed', photosWithHashes.length, 'photos');
+
+      // STEP 3: Check which photos already exist on server
+      console.log('[HomeScreen] Checking for existing photos on server...');
+      const checksums = photosWithHashes.map(p => p.hash);
+      const checkResult = await photoService.checkBulkUpload(checksums);
+
+      if (checkResult.error) {
+        console.error('[HomeScreen] Error checking bulk upload:', checkResult.error);
+        // Continue with upload anyway (fallback to old behavior)
+      }
+
+      const existingHashes = new Set(checkResult.data?.existing_hashes || []);
+      const existingPhotos = checkResult.data?.existing_photos || {};
+      const photosToUpload = photosWithHashes.filter(p => !existingHashes.has(p.hash));
+      const photosToSkip = photosWithHashes.filter(p => existingHashes.has(p.hash));
+
+      console.log(`[HomeScreen] Deduplication results: ${photosToUpload.length} new, ${photosToSkip.length} duplicates`);
+
+      // STEP 4: Mark skipped photos as uploaded (they already exist on server)
+      let uploadedCount = photosToSkip.length;
+      for (const {photo, hash} of photosToSkip) {
+        const existingPhotoInfo = existingPhotos[hash];
+        if (existingPhotoInfo?.id) {
+          const cloudId = existingPhotoInfo.id;
+          console.log(`[HomeScreen] Skipping duplicate: ${photo.filename} (already exists as photo ID ${cloudId})`);
+          
+          // Track as uploaded
+          await uploadTracker.markAsUploaded(photo.originalUri || photo.uri, cloudId);
+          
+          // Fetch photo details to update UI
+          try {
+            const photoDetailResponse = await photoService.getPhoto(cloudId);
+            if (photoDetailResponse.data?.photo) {
+              const cloudPhotoData = photoDetailResponse.data.photo;
+              const cloudThumbnailUri = photoMergeService.getCloudPhotoUri(cloudPhotoData);
+              
+              // Update mergedPhotos state to show as uploaded
+              setMergedPhotos(prev => prev.map(p => {
+                const photoUriToCheck = p.originalUri || p.uri;
+                if (photoUriToCheck === (photo.originalUri || photo.uri) && p.syncStatus === 'local_only') {
+                  return {
+                    ...p,
+                    syncStatus: 'uploaded' as const,
+                    isUploaded: true,
+                    cloudId: cloudId,
+                    cloudData: cloudPhotoData,
+                    uri: cloudThumbnailUri || p.uri,
+                    originalUri: p.originalUri || p.uri,
+                  };
+                }
+                return p;
+              }));
+            }
+          } catch (error) {
+            console.error(`[HomeScreen] Error fetching existing photo ${cloudId}:`, error);
+          }
+        }
+      }
+
+      // Update progress for skipped photos
+      if (photosToSkip.length > 0) {
+        setUploadingDates(prev => ({
+          ...prev,
+          [date]: {isUploading: true, uploaded: uploadedCount, total: localPhotos.length},
+        }));
+      }
+
+      // STEP 5: Upload only new photos
+      for (const {photo, uri: photoUri, tempFilePath} of photosToUpload) {
+        // Use the temp file we created for hashing (if it exists)
+        // For ph:// URIs, we already created a temp file during hash calculation
+        let uploadUri = photoUri;
+        
+        // If we have a temp file from hashing, reuse it and add to cleanup
+        if (tempFilePath) {
+          uploadUri = photoUri; // Already points to temp file
+          tempFilesToCleanup.push(tempFilePath);
+        } else if ((photo.originalUri || photo.uri).startsWith('ph://')) {
+          // Create a new temp file for upload (for ph:// URIs that weren't converted during hash)
+          try {
+            const RNFS = require('react-native-fs').default;
+            const fileExtension = photo.filename.split('.').pop() || 'jpg';
+            const tempFileName = `photonix_upload_${Date.now()}_${Math.random().toString(36).substring(7)}.${fileExtension}`;
+            const destPath = `${RNFS.TemporaryDirectoryPath}/${tempFileName}`;
+            await RNFS.copyAssetsFileIOS(photo.originalUri || photo.uri, destPath, 0, 0);
+            uploadUri = `file://${destPath}`;
+            tempFilesToCleanup.push(destPath);
+          } catch (error: any) {
+            console.error('[HomeScreen] Error creating upload temp file:', error);
+            continue;
+          }
+        }
+
         const file = {
-          uri: photoUri,
+          uri: uploadUri,
           type: 'image/jpeg',
           name: photo.filename,
         };
@@ -1011,6 +1213,88 @@ export default function HomeScreen() {
     return `${baseUrl}${url}`;
   };
 
+  // Handle photo press - memoized to prevent recreation
+  const handlePhotoPress = useCallback((photo: MergedPhoto, index: number) => {
+    // Use memoized photo list (already computed, no recalculation)
+    const currentIndex = allMergedPhotosForNavigation.findIndex(p => p.id === photo.id);
+    
+    // For uploaded photos, open in viewer with cloud ID
+    if (photo.cloudId) {
+      navigation.navigate('PhotoViewer', {
+        photoId: photo.cloudId,
+        photoList: photoListForNavigation,
+        initialIndex: currentIndex >= 0 ? currentIndex : 0,
+      });
+    } else {
+      // For local-only photos, open with local URI
+      navigation.navigate('PhotoViewer', {
+        localUri: photo.uri,
+        photoTitle: photo.filename,
+        photoList: photoListForNavigation,
+        initialIndex: currentIndex >= 0 ? currentIndex : 0,
+      });
+    }
+  }, [allMergedPhotosForNavigation, photoListForNavigation, navigation]);
+
+  // Render a single date section (used by FlatList)
+  const renderDateSection = useCallback(({item}: {item: {date: string; dateHeader: string; photos: MergedPhoto[]}}) => {
+    const {date, dateHeader, photos} = item;
+    const uploadState = uploadingDates[date];
+    const localOnlyPhotos = photos.filter(p => p.syncStatus === 'local_only');
+    const hasLocalPhotos = localOnlyPhotos.length > 0;
+    const totalPhotos = photos.length;
+    
+    return (
+      <View key={`${date}-${totalPhotos}`}>
+        <View style={styles.dateHeaderContainer}>
+          <Text style={styles.dateHeader}>{dateHeader}</Text>
+          {hasLocalPhotos && (
+            <UploadButton
+              onPress={() => handleUploadLocalPhotos(localOnlyPhotos)}
+              isUploading={uploadState?.isUploading || false}
+              uploadedCount={uploadState?.uploaded}
+              totalCount={uploadState?.total}
+              showMenu={false}
+              isAllUploaded={false}
+            />
+          )}
+        </View>
+        <View style={styles.grid}>
+          {/* Render all merged photos using memoized PhotoThumbnail component */}
+          {/* Each thumbnail only re-renders when its own data changes */}
+          {photos.map((photo: MergedPhoto, index: number) => (
+            <PhotoThumbnail
+              key={`${photo.id}_${index}_${photo.uri}`}
+              photo={photo}
+              index={index}
+              onPress={handlePhotoPress}
+            />
+          ))}
+        </View>
+      </View>
+    );
+  }, [uploadingDates, handleUploadLocalPhotos, handlePhotoPress]);
+
+  // Key extractor for FlatList
+  const keyExtractor = useCallback((item: {date: string; dateHeader: string; photos: MergedPhoto[]}) => {
+    return item.date;
+  }, []);
+
+  // Handle end reached for pagination
+  const handleEndReached = useCallback(() => {
+    if (!isLoadingMore && hasMorePhotos && !isLoading && activeFilter === 'Recent') {
+      loadMorePhotos();
+    }
+  }, [isLoadingMore, hasMorePhotos, isLoading, activeFilter]);
+
+  // Handle preload when scrolling
+  const handleViewableItemsChanged = useCallback(() => {
+    // Preload next page when buffer is empty and user is scrolling
+    if (hasMorePhotos && !isPreloading && preloadedPhotos.length === 0 && activeFilter === 'Recent') {
+      preloadNextPage(currentPage + 1);
+    }
+  }, [hasMorePhotos, isPreloading, preloadedPhotos.length, currentPage, activeFilter]);
+
   const renderRecentView = () => {
     // Show skeleton loader when initially loading
     if ((isLoading && photos.length === 0) || (isLoadingDevicePhotos && Object.keys(devicePhotos).length === 0)) {
@@ -1039,108 +1323,43 @@ export default function HomeScreen() {
       );
     }
 
+    // Use FlatList for virtualization (only renders visible date sections)
+    // Debug: Log total photos and date sections
+    const totalPhotos = getMergedPhotosByDate.reduce((sum, item) => sum + item.photos.length, 0);
+    console.log(`[HomeScreen] Rendering FlatList with ${getMergedPhotosByDate.length} date sections, ${totalPhotos} total photos`);
+    
     return (
-      <>
-        {getMergedPhotosByDate.map(({date, dateHeader, photos}) => {
-          const uploadState = uploadingDates[date];
-          const localOnlyPhotos = photos.filter(p => p.syncStatus === 'local_only');
-          const hasLocalPhotos = localOnlyPhotos.length > 0;
-          const totalPhotos = photos.length;
-          
-          return (
-            <View key={`${date}-${totalPhotos}`}>
-              <View style={styles.dateHeaderContainer}>
-                <Text style={styles.dateHeader}>{dateHeader}</Text>
-                {hasLocalPhotos && (
-                  <UploadButton
-                    onPress={() => handleUploadLocalPhotos(localOnlyPhotos)}
-                    isUploading={uploadState?.isUploading || false}
-                    uploadedCount={uploadState?.uploaded}
-                    totalCount={uploadState?.total}
-                    showMenu={false}
-                    isAllUploaded={false}
-                  />
-                )}
-              </View>
-              <View style={styles.grid}>
-              {/* Render all merged photos (deduplicated, sorted by capture date) */}
-              {photos.map((photo: MergedPhoto, index: number) => {
-                const isLocalOnly = photo.syncStatus === 'local_only';
-                const isUploaded = photo.syncStatus === 'uploaded';
-
-                return (
-                  <View key={`${photo.id}_${index}_${photo.uri}`} style={styles.photoThumbnail}>
-                    <TouchableOpacity
-                      style={styles.photoTouchable}
-                      onPress={() => {
-                        // Use memoized photo list (already computed, no recalculation)
-                        const currentIndex = allMergedPhotosForNavigation.findIndex(p => p.id === photo.id);
-                        
-                        // For uploaded photos, open in viewer with cloud ID
-                        if (photo.cloudId) {
-                          navigation.navigate('PhotoViewer', {
-                            photoId: photo.cloudId,
-                            photoList: photoListForNavigation,
-                            initialIndex: currentIndex >= 0 ? currentIndex : 0,
-                          });
-                        } else {
-                          // For local-only photos, open with local URI
-                          navigation.navigate('PhotoViewer', {
-                            localUri: photo.uri,
-                            photoTitle: photo.filename,
-                            photoList: photoListForNavigation,
-                            initialIndex: currentIndex >= 0 ? currentIndex : 0,
-                          });
-                        }
-                      }}>
-                      {/* Use AuthImage for cloud photos with thumbnails, Image for local photos or fallback */}
-                      {(() => {
-                        // Determine which image to show
-                        const hasCloudThumbnail = isUploaded && photo.cloudId && photo.uri && photo.uri.startsWith('http');
-                        const localUri = photo.originalUri || photo.uri;
-                        
-                        if (hasCloudThumbnail) {
-                          // Use AuthImage for cloud thumbnails, with local fallback
-                          return (
-                        <AuthImage
-                              key={`cloud_${photo.cloudId}_${photo.uri}`} // Force re-render when URI changes
-                          source={{uri: photo.uri}}
-                              fallbackSource={localUri ? {uri: localUri} : undefined}
-                          style={styles.photoImage}
-                          resizeMode="cover"
-                        />
-                          );
-                        } else {
-                          // Use local image (either local-only or fallback for uploaded photos without thumbnails)
-                          return (
-                        <Image
-                              key={`local_${photo.id}_${localUri}`} // Force re-render when URI changes
-                              source={{uri: localUri || ''}}
-                          style={styles.photoImage}
-                          resizeMode="cover"
-                        />
-                          );
-                        }
-                      })()}
-                    </TouchableOpacity>
-                    {/* Sync status indicator */}
-                    <View style={styles.photoStatusIndicator}>
-                      {isLocalOnly && (
-                        <Icon name="cloud-upload-outline" size={18} color="#ffffff" />
-                      )}
-                      {isUploaded && (
-                        <PhotoUploadStatus isUploaded={true} size={18} />
-                      )}
-                    </View>
-                  </View>
-                );
-              })}
+      <FlatList
+        style={styles.scrollView}
+        data={getMergedPhotosByDate}
+        renderItem={renderDateSection}
+        keyExtractor={keyExtractor}
+        onEndReached={handleEndReached}
+        onEndReachedThreshold={0.3} // Trigger when 30% from bottom
+        onViewableItemsChanged={handleViewableItemsChanged}
+        viewabilityConfig={{itemVisiblePercentThreshold: 50}}
+        refreshControl={
+          <RefreshControl refreshing={isRefreshing} onRefresh={onRefresh} />
+        }
+        // Virtualization props for performance
+        removeClippedSubviews={true} // Remove off-screen views from native view hierarchy
+        maxToRenderPerBatch={10} // Render 10 items per batch
+        windowSize={5} // Render 5 screens worth of items
+        initialNumToRender={5} // Render first 5 date sections initially (increased for better initial display)
+        updateCellsBatchingPeriod={50} // Batch updates every 50ms
+        // Note: Not using getItemLayout because date sections have variable heights
+        // FlatList will calculate heights automatically for better accuracy
+        ListFooterComponent={
+          isLoadingMore ? (
+            <View style={styles.loadMoreContainer}>
+              <ActivityIndicator size="small" color="#666666" />
+              <Text style={styles.loadMoreText}>Loading more photos...</Text>
             </View>
-          </View>
-            );
-          })}
-    </>
-  );
+          ) : null
+        }
+        contentContainerStyle={styles.gridContainer}
+      />
+    );
   };
 
   const renderPeopleView = () => {
@@ -1359,42 +1578,19 @@ export default function HomeScreen() {
       </View>
 
       {/* Content based on active filter */}
-      <ScrollView
-        style={styles.scrollView}
-        contentContainerStyle={styles.gridContainer}
-        refreshControl={
-          <RefreshControl refreshing={isRefreshing} onRefresh={onRefresh} />
-        }
-        onScroll={({nativeEvent}) => {
-          // Detect when user scrolls near bottom and load more
-          const {layoutMeasurement, contentOffset, contentSize} = nativeEvent;
-          const paddingToBottom = 300; // Trigger load when 300px from bottom
-          const isCloseToBottom =
-            layoutMeasurement.height + contentOffset.y >=
-            contentSize.height - paddingToBottom;
-
-          if (isCloseToBottom && activeFilter === 'Recent') {
-            loadMorePhotos();
-          }
-          
-          // Always keep next page preloaded (50 photos in backup)
-          // Preload when buffer is empty and user is scrolling
-          if (hasMorePhotos && !isPreloading && preloadedPhotos.length === 0) {
-            // Preload next page immediately to keep buffer ready
-            preloadNextPage(currentPage + 1);
-          }
-        }}
-        scrollEventThrottle={400}>
-        {renderContent()}
-
-        {/* Loading indicator for pagination */}
-        {isLoadingMore && (
-          <View style={styles.loadMoreContainer}>
-            <ActivityIndicator size="small" color="#666666" />
-            <Text style={styles.loadMoreText}>Loading more photos...</Text>
-          </View>
-        )}
-      </ScrollView>
+      {/* Use FlatList for Recent tab (virtualization), ScrollView for others */}
+      {activeFilter === 'Recent' ? (
+        renderRecentView()
+      ) : (
+        <ScrollView
+          style={styles.scrollView}
+          contentContainerStyle={styles.gridContainer}
+          refreshControl={
+            <RefreshControl refreshing={isRefreshing} onRefresh={onRefresh} />
+          }>
+          {renderContent()}
+        </ScrollView>
+      )}
 
       {/* Floating Action Button - Show only on Albums tab */}
       {activeFilter === 'Albums' && (

@@ -19,8 +19,9 @@ class PhotoStorageService
     # @return [Hash] Storage information including checksum, file_path, file_size
     def store_photo(file, user)
       begin
-      # Calculate checksum
+      # Calculate checksums (SHA256 for storage integrity, SHA-1 for fast pre-check)
       checksum = calculate_checksum(file)
+      sha1_hash = calculate_sha1_hash(file)
 
         # Get file extension safely
         filename = file.original_filename || 'photo.jpg'
@@ -52,6 +53,7 @@ class PhotoStorageService
 
       {
         checksum: checksum,
+        sha1_hash: sha1_hash,
         file_path: relative_path,
         file_size: File.size(full_path),
           format: extension.delete('.').downcase.presence || 'jpg'
@@ -140,20 +142,33 @@ class PhotoStorageService
 
     private
 
-    # Calculate SHA256 checksum of a file
+    # Calculate SHA256 checksum of a file (for storage integrity)
     # @param file [ActionDispatch::Http::UploadedFile] The uploaded file
     # @return [String] Hex checksum
     def calculate_checksum(file)
-      # Rails UploadedFile provides a path method that returns tempfile.path
-      # Fallback to tempfile.path if path method doesn't work
-      file_path = if file.respond_to?(:path) && file.path
-                    file.path.to_s
-                  elsif file.respond_to?(:tempfile) && file.tempfile
-                    file.tempfile.path.to_s
-                  else
-                    raise ArgumentError, "Unable to determine file path for uploaded file"
-                  end
+      file_path = get_file_path(file)
       Digest::SHA256.file(file_path).hexdigest
+    end
+
+    # Calculate SHA-1 hash of a file (for fast pre-upload deduplication check)
+    # @param file [ActionDispatch::Http::UploadedFile] The uploaded file
+    # @return [String] Hex SHA-1 hash
+    def calculate_sha1_hash(file)
+      file_path = get_file_path(file)
+      Digest::SHA1.file(file_path).hexdigest
+    end
+
+    # Get file path from uploaded file
+    # @param file [ActionDispatch::Http::UploadedFile] The uploaded file
+    # @return [String] File path
+    def get_file_path(file)
+      if file.respond_to?(:path) && file.path
+        file.path.to_s
+      elsif file.respond_to?(:tempfile) && file.tempfile
+        file.tempfile.path.to_s
+      else
+        raise ArgumentError, "Unable to determine file path for uploaded file"
+      end
     end
 
     # Generate a storage path from checksum

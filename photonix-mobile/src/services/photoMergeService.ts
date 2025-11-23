@@ -36,46 +36,87 @@ class PhotoMergeService {
   private CACHE_DURATION = 60000; // Cache for 60 seconds
 
   /**
-   * Get all photos from device camera roll (with caching)
+   * Get all photos from device camera roll (with caching and pagination)
+   * Fetches ALL photos from device using pagination to handle large libraries
    */
-  async getLocalPhotos(limit: number = 200, forceRefresh: boolean = false): Promise<LocalPhoto[]> {
+  async getLocalPhotos(limit: number | null = null, forceRefresh: boolean = false): Promise<LocalPhoto[]> {
     try {
       // Return cached photos if available and not expired
       const now = Date.now();
       if (
         !forceRefresh &&
         this.localPhotosCache &&
-        now - this.cacheTimestamp < this.CACHE_DURATION
+        now - this.cacheTimestamp < this.CACHE_DURATION &&
+        limit === null // Only use cache if fetching all photos
       ) {
         console.log('[PhotoMergeService] Returning cached local photos:', this.localPhotosCache.length);
         return this.localPhotosCache;
       }
 
       console.log('[PhotoMergeService] Fetching local photos from device...');
-      const result = await CameraRoll.getPhotos({
-        first: limit,
-        assetType: 'Photos',
-        include: ['filename', 'fileSize', 'imageSize'],
-        // Request smaller images for better performance (thumbnails are faster to load)
-        // The actual full-size image will be loaded when user opens the photo viewer
-      });
+      const allPhotos: LocalPhoto[] = [];
+      const BATCH_SIZE = 1000; // Fetch 1000 photos per batch
+      let after: string | undefined = undefined;
+      let hasNextPage = true;
+      let batchCount = 0;
 
-      const photos = result.edges.map((edge: PhotoIdentifier) => ({
-        uri: edge.node.image.uri,
-        filename: edge.node.image.filename || 'unknown.jpg',
-        timestamp: edge.node.timestamp,
-        type: edge.node.type,
-        fileSize: edge.node.image.fileSize || 0,
-        width: edge.node.image.width,
-        height: edge.node.image.height,
-      }));
+      // Fetch all photos using pagination
+      while (hasNextPage && (limit === null || allPhotos.length < limit)) {
+        batchCount++;
+        const currentBatchSize = limit && limit - allPhotos.length < BATCH_SIZE 
+          ? limit - allPhotos.length 
+          : BATCH_SIZE;
 
-      // Update cache
-      this.localPhotosCache = photos;
-      this.cacheTimestamp = now;
-      console.log('[PhotoMergeService] Cached', photos.length, 'local photos');
+        const params: any = {
+          first: currentBatchSize,
+          assetType: 'Photos',
+          include: ['filename', 'fileSize', 'imageSize'],
+        };
 
-      return photos;
+        if (after) {
+          params.after = after;
+        }
+
+        const result = await CameraRoll.getPhotos(params);
+
+        const batchPhotos = result.edges.map((edge: PhotoIdentifier) => ({
+          uri: edge.node.image.uri,
+          filename: edge.node.image.filename || 'unknown.jpg',
+          timestamp: edge.node.timestamp,
+          type: edge.node.type,
+          fileSize: edge.node.image.fileSize || 0,
+          width: edge.node.image.width,
+          height: edge.node.image.height,
+        }));
+
+        allPhotos.push(...batchPhotos);
+        
+        // Check if there are more photos
+        hasNextPage = result.page_info.has_next_page;
+        after = result.page_info.end_cursor;
+
+        const progressPercent = limit 
+          ? Math.round((allPhotos.length / limit) * 100)
+          : Math.min(100, Math.round((allPhotos.length / 10000) * 100)); // Estimate for unlimited
+        
+        console.log(`[PhotoMergeService] Batch ${batchCount}: Fetched ${batchPhotos.length} photos (total: ${allPhotos.length}${limit ? `/${limit}` : ''})`);
+
+        // Stop if we've reached the limit
+        if (limit && allPhotos.length >= limit) {
+          break;
+        }
+      }
+
+      console.log(`[PhotoMergeService] ✅ Total photos fetched: ${allPhotos.length} in ${batchCount} batch(es)`);
+
+      // Update cache only if fetching all photos (no limit)
+      if (limit === null) {
+        this.localPhotosCache = allPhotos;
+        this.cacheTimestamp = now;
+        console.log('[PhotoMergeService] Cached', allPhotos.length, 'local photos');
+      }
+
+      return allPhotos;
     } catch (error) {
       console.error('[PhotoMergeService] Error getting local photos:', error);
       return [];
@@ -180,7 +221,8 @@ class PhotoMergeService {
       // If no cloud photos, just return all local photos
       if (!cloudPhotos || cloudPhotos.length === 0) {
         console.log('[PhotoMergeService] No cloud photos, loading ALL local photos');
-        const allLocalPhotos = await this.getLocalPhotos();
+        // Fetch ALL local photos (no limit) using pagination
+        const allLocalPhotos = await this.getLocalPhotos(null);
         console.log(`[PhotoMergeService] Found ${allLocalPhotos.length} local photos`);
 
         return allLocalPhotos.map(localPhoto => ({
@@ -209,7 +251,8 @@ class PhotoMergeService {
       const maxDate = cloudDates.length > 0 ? Math.max(...cloudDates) : Date.now();
       
       // Get local photos (cached, so fast)
-      const allLocalPhotos = await this.getLocalPhotos();
+      // Fetch ALL local photos (no limit) using pagination to get all device photos
+      const allLocalPhotos = await this.getLocalPhotos(null);
     const uploadedPhotos = await uploadTracker.getUploadedPhotos();
 
       // Use ALL local photos instead of filtering by date range

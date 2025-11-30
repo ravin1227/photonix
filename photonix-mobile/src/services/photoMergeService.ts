@@ -2,6 +2,7 @@ import {Photo} from './photoService';
 import {CameraRoll, PhotoIdentifier} from '@react-native-camera-roll/camera-roll';
 import {Platform} from 'react-native';
 import uploadTracker from './uploadTracker';
+import devicePhotoService from './devicePhotoService';
 
 export interface LocalPhoto {
   uri: string;
@@ -53,6 +54,18 @@ class PhotoMergeService {
         return this.localPhotosCache;
       }
 
+      // IMPORTANT: Request permission before accessing photos
+      console.log('[PhotoMergeService] Checking photo library permission...');
+      const hasPermission = await devicePhotoService.checkPermission();
+      if (!hasPermission) {
+        console.log('[PhotoMergeService] Requesting photo library permission...');
+        const granted = await devicePhotoService.requestPermission();
+        if (!granted) {
+          console.log('[PhotoMergeService] Permission denied, returning empty array');
+          return [];
+        }
+      }
+
       console.log('[PhotoMergeService] Fetching local photos from device...');
       const allPhotos: LocalPhoto[] = [];
       const BATCH_SIZE = 1000; // Fetch 1000 photos per batch
@@ -63,8 +76,8 @@ class PhotoMergeService {
       // Fetch all photos using pagination
       while (hasNextPage && (limit === null || allPhotos.length < limit)) {
         batchCount++;
-        const currentBatchSize = limit && limit - allPhotos.length < BATCH_SIZE 
-          ? limit - allPhotos.length 
+        const currentBatchSize = limit && limit - allPhotos.length < BATCH_SIZE
+          ? limit - allPhotos.length
           : BATCH_SIZE;
 
         const params: any = {

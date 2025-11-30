@@ -1,5 +1,5 @@
 import {CameraRoll, GetPhotosParams, PhotoIdentifier} from '@react-native-camera-roll/camera-roll';
-import {Platform, PermissionsAndroid} from 'react-native';
+import {Platform, PermissionsAndroid, Linking, Alert} from 'react-native';
 
 export interface DevicePhoto {
   id: string;
@@ -23,42 +23,92 @@ export interface DeviceAlbum {
 class DevicePhotoService {
   private hasPermission: boolean | null = null;
 
+  // Check if permission is granted
+  async checkPermission(): Promise<boolean> {
+    if (Platform.OS === 'android') {
+      try {
+        const apiLevel = Platform.Version as number;
+        const permission = apiLevel >= 33
+          ? PermissionsAndroid.PERMISSIONS.READ_MEDIA_IMAGES
+          : PermissionsAndroid.PERMISSIONS.READ_EXTERNAL_STORAGE;
+
+        const result = await PermissionsAndroid.check(permission);
+        this.hasPermission = result;
+        return result;
+      } catch (err) {
+        console.error('[DevicePhotoService] Permission check error:', err);
+        return false;
+      }
+    } else {
+      // iOS: CameraRoll handles permissions automatically
+      // Just return true - permission request happens on first CameraRoll.getPhotos() call
+      console.log('[DevicePhotoService] iOS: Assuming permission granted (handled by CameraRoll)');
+      return true;
+    }
+  }
+
+  // Show dialog to open app settings
+  showSettingsDialog(): void {
+    Alert.alert(
+      'Photo Library Access Required',
+      'Photonix needs access to your photos to display and upload them. Please enable photo library access in Settings.',
+      [
+        {
+          text: 'Cancel',
+          style: 'cancel',
+        },
+        {
+          text: 'Open Settings',
+          onPress: () => {
+            if (Platform.OS === 'ios') {
+              Linking.openURL('app-settings:');
+            } else {
+              Linking.openSettings();
+            }
+          },
+        },
+      ],
+    );
+  }
+
   // Request photo library permission
   async requestPermission(): Promise<boolean> {
     if (Platform.OS === 'android') {
       try {
+        // Android 13+ (API 33+) uses READ_MEDIA_IMAGES
+        // Older versions use READ_EXTERNAL_STORAGE
+        const apiLevel = Platform.Version as number;
+        const permission = apiLevel >= 33
+          ? PermissionsAndroid.PERMISSIONS.READ_MEDIA_IMAGES
+          : PermissionsAndroid.PERMISSIONS.READ_EXTERNAL_STORAGE;
+
+        console.log(`[DevicePhotoService] Requesting permission: ${permission} (API ${apiLevel})`);
+
         const granted = await PermissionsAndroid.request(
-          PermissionsAndroid.PERMISSIONS.READ_MEDIA_IMAGES,
+          permission,
           {
-            title: 'Photo Library Permission',
+            title: 'Photo Library Access',
             message: 'Photonix needs access to your photos to display and upload them',
             buttonNeutral: 'Ask Me Later',
-            buttonNegative: 'Cancel',
-            buttonPositive: 'OK',
+            buttonNegative: 'Deny',
+            buttonPositive: 'Allow',
           },
         );
+
+        console.log(`[DevicePhotoService] Permission result: ${granted}`);
         this.hasPermission = granted === PermissionsAndroid.RESULTS.GRANTED;
         return this.hasPermission;
       } catch (err) {
-        console.warn(err);
+        console.error('[DevicePhotoService] Permission request error:', err);
         this.hasPermission = false;
         return false;
       }
     } else {
-      // iOS permissions are handled via Info.plist
-      // CameraRoll will request permission automatically
-      try {
-        const hasPermission = await CameraRoll.hasMediaLibraryPermission();
-        this.hasPermission = hasPermission;
-        if (!hasPermission) {
-          const result = await CameraRoll.requestMediaLibraryPermission();
-          this.hasPermission = result === 'granted' || result === 'limited';
-        }
-        return this.hasPermission || false;
-      } catch (error) {
-        console.error('Error checking iOS permission:', error);
-        return false;
-      }
+      // iOS: CameraRoll will request permission automatically on first access
+      // Just assume permission is granted - CameraRoll.getPhotos() will handle it
+      console.log('[DevicePhotoService] iOS: Permissions handled by CameraRoll automatically');
+      this.hasPermission = true;
+      return true;
     }
   }
 

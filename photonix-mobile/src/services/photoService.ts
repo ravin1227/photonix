@@ -87,6 +87,68 @@ class PhotoService {
     return apiService.get<{photo: PhotoDetail}>(`/photos/${id}`);
   }
 
+  // Check which photos already exist on server (pre-upload deduplication)
+  // Accepts array of SHA-1 hashes and returns existing hashes
+  async checkBulkUpload(checksums: string[]) {
+    try {
+      if (!checksums || checksums.length === 0) {
+        return {data: {existing_hashes: [], total_checked: 0, existing_count: 0, new_count: 0}};
+      }
+
+      // Batch check in chunks of 50 (backend limit)
+      const BATCH_SIZE = 50;
+      const allExistingHashes: string[] = [];
+
+      for (let i = 0; i < checksums.length; i += BATCH_SIZE) {
+        const batch = checksums.slice(i, i + BATCH_SIZE);
+        const response = await apiService.post<{
+          existing_hashes: string[];
+          total_checked: number;
+          existing_count: number;
+          new_count: number;
+        }>('/photos/check_bulk_upload', {checksums: batch});
+
+        if (response.data?.existing_hashes) {
+          allExistingHashes.push(...response.data.existing_hashes);
+        }
+      }
+
+      // Also collect existing photo IDs
+      const allExistingPhotoIds: Record<string, {id: number}> = {};
+      
+      for (let i = 0; i < checksums.length; i += BATCH_SIZE) {
+        const batch = checksums.slice(i, i + BATCH_SIZE);
+        const response = await apiService.post<{
+          existing_hashes: string[];
+          existing_photos: Record<string, {id: number}>;
+          total_checked: number;
+          existing_count: number;
+          new_count: number;
+        }>('/photos/check_bulk_upload', {checksums: batch});
+
+        if (response.data?.existing_photos) {
+          Object.assign(allExistingPhotoIds, response.data.existing_photos);
+        }
+      }
+
+      return {
+        data: {
+          existing_hashes: allExistingHashes,
+          existing_photos: allExistingPhotoIds,
+          total_checked: checksums.length,
+          existing_count: allExistingHashes.length,
+          new_count: checksums.length - allExistingHashes.length,
+        },
+      };
+    } catch (error: any) {
+      console.error('[PhotoService] checkBulkUpload error:', error);
+      return {
+        error: error.message || 'Failed to check bulk upload',
+        data: {existing_hashes: [], total_checked: 0, existing_count: 0, new_count: 0},
+      };
+    }
+  }
+
   // Upload single photo
   async uploadPhoto(file: {uri: string; type: string; name: string}, capturedAt?: string) {
     return apiService.upload<PhotoUploadResponse>('/photos', file, {captured_at: capturedAt});

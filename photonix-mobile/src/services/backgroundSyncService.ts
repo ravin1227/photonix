@@ -1,4 +1,5 @@
 import BackgroundFetch from 'react-native-background-fetch';
+import {Platform} from 'react-native';
 import albumSyncService, {SyncResult} from './albumSyncService';
 import notificationService from './notificationService';
 
@@ -11,6 +12,14 @@ class BackgroundSyncService {
   async configure() {
     if (this.isConfigured) {
       console.log('[BackgroundSync] Already configured');
+      return;
+    }
+
+    // iOS background fetch requires native AppDelegate setup
+    // Skip configuration on iOS if not properly set up to avoid errors
+    if (Platform.OS === 'ios') {
+      console.log('[BackgroundSync] iOS background fetch requires native setup. Skipping configuration.');
+      console.log('[BackgroundSync] To enable: Register background task in AppDelegate.swift');
       return;
     }
 
@@ -53,8 +62,14 @@ class BackgroundSyncService {
       });
 
       console.log('[BackgroundSync] Background sync configured successfully');
-    } catch (error) {
-      console.error('[BackgroundSync] Configuration error:', error);
+    } catch (error: any) {
+      // Silently handle configuration errors (especially on iOS)
+      // Background sync is not critical for app functionality
+      if (error?.message?.includes('Background processing task was not registered')) {
+        console.log('[BackgroundSync] Background sync not available (requires native setup)');
+      } else {
+        console.warn('[BackgroundSync] Configuration error (non-critical):', error?.message || error);
+      }
     }
   }
 

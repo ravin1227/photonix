@@ -23,6 +23,42 @@ module Api
         render json: { photo: photo_detail_response(@photo) }
       end
 
+      # POST /api/v1/photos/check_bulk_upload
+      # Check which photos already exist on server before uploading
+      # Accepts array of SHA-1 hashes and returns existing hashes with photo IDs
+      # This prevents uploading duplicates and saves bandwidth
+      def check_bulk_upload
+        checksums = params[:checksums] || []
+        
+        unless checksums.is_a?(Array) && checksums.length > 0
+          render json: { error: 'checksums parameter must be a non-empty array' }, status: :bad_request
+          return
+        end
+
+        # Limit batch size to prevent abuse (max 50 checksums per request)
+        if checksums.length > 50
+          render json: { error: 'Maximum 50 checksums per request' }, status: :bad_request
+          return
+        end
+
+        # Find existing photos by SHA-1 hash (O(1) lookup with index)
+        # Return hash -> photo_id mapping for easy lookup
+        existing_photos = current_user.photos.active
+                                      .where(sha1_hash: checksums)
+                                      .select(:id, :sha1_hash)
+        
+        existing_hash_map = existing_photos.index_by(&:sha1_hash)
+        existing_hashes = existing_hash_map.keys.compact.uniq
+
+        render json: {
+          existing_hashes: existing_hashes,
+          existing_photos: existing_hash_map.transform_values { |photo| { id: photo.id } },
+          total_checked: checksums.length,
+          existing_count: existing_hashes.length,
+          new_count: checksums.length - existing_hashes.length
+        }
+      end
+
       # POST /api/v1/photos
       # Handles both single and multiple photo uploads
       def create
@@ -49,13 +85,15 @@ module Api
             storage_info = PhotoStorageService.store_photo(uploaded_file, current_user)
 
             # Check if photo with this checksum already exists (idempotent upload)
-            existing_photo = current_user.photos.active.find_by(checksum: storage_info[:checksum])
+            # Check by SHA256 checksum first, then by SHA-1 hash
+            existing_photo = current_user.photos.active.find_by(checksum: storage_info[:checksum]) ||
+                            (storage_info[:sha1_hash] && current_user.photos.active.find_by(sha1_hash: storage_info[:sha1_hash]))
 
             if existing_photo
               # Photo already exists - clean up the newly stored file and return existing photo
               PhotoStorageService.delete_photo(storage_info[:file_path])
 
-              Rails.logger.info "Duplicate photo detected (checksum: #{storage_info[:checksum]}), returning existing photo ID #{existing_photo.id}"
+              Rails.logger.info "Duplicate photo detected (checksum: #{storage_info[:checksum]}, sha1: #{storage_info[:sha1_hash]}), returning existing photo ID #{existing_photo.id}"
 
               results[:successful] << {
                 index: index,
@@ -81,6 +119,7 @@ module Api
                 file_size: storage_info[:file_size],
                 format: storage_info[:format],
                 checksum: storage_info[:checksum],
+                sha1_hash: storage_info[:sha1_hash],
                 processing_status: 'pending',
                 **exif_data
               )

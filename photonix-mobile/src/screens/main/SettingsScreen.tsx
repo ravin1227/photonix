@@ -1,12 +1,13 @@
 import React, {useState} from 'react';
-import {View, Text, StyleSheet, ScrollView, TouchableOpacity, Alert, ActivityIndicator} from 'react-native';
-import {SafeAreaView} from 'react-native-safe-area-context';
+import {View, Text, StyleSheet, ScrollView, TouchableOpacity, Alert, ActivityIndicator, Platform, StatusBar} from 'react-native';
+import {SafeAreaView, useSafeAreaInsets} from 'react-native-safe-area-context';
 import {useAuth} from '../../contexts/AuthContext';
 import {API_CONFIG} from '../../config/api';
 
 export default function SettingsScreen() {
   const {user, logout} = useAuth();
   const [isSigningOut, setIsSigningOut] = useState(false);
+  const insets = useSafeAreaInsets();
 
   const handleSignOut = () => {
     Alert.alert(
@@ -50,9 +51,22 @@ export default function SettingsScreen() {
     return user.name[0].toUpperCase();
   };
 
+  const safeAreaEdges = ['top'] as const;
+  const containerStyle = Platform.OS === 'android' 
+    ? [styles.container, {paddingBottom: Math.max(insets.bottom, 16)}]
+    : styles.container;
+
   return (
-    <SafeAreaView style={styles.container} edges={['top']}>
-      <View style={styles.header}>
+    <>
+      {Platform.OS === 'android' && (
+        <StatusBar
+          barStyle="dark-content"
+          backgroundColor="#ffffff"
+          translucent={false}
+        />
+      )}
+      <SafeAreaView style={containerStyle} edges={safeAreaEdges}>
+        <View style={styles.header}>
         <Text style={styles.title}>Settings</Text>
       </View>
 
@@ -145,7 +159,8 @@ export default function SettingsScreen() {
           </TouchableOpacity>
         </View>
       </ScrollView>
-    </SafeAreaView>
+      </SafeAreaView>
+    </>
   );
 }
 

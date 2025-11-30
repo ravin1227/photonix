@@ -9,8 +9,9 @@ import {
   RefreshControl,
   Alert,
   Platform,
+  StatusBar,
 } from 'react-native';
-import {SafeAreaView} from 'react-native-safe-area-context';
+import {SafeAreaView, useSafeAreaInsets} from 'react-native-safe-area-context';
 import {useNavigation, useRoute, RouteProp} from '@react-navigation/native';
 import {NativeStackNavigationProp} from '@react-navigation/native-stack';
 import Icon from 'react-native-vector-icons/Ionicons';
@@ -36,6 +37,7 @@ type AlbumsScreenRouteProp = RouteProp<AlbumsStackParamList, 'AlbumsList'>;
 export default function AlbumsScreen() {
   const navigation = useNavigation<AlbumsScreenNavigationProp>();
   const route = useRoute<AlbumsScreenRouteProp>();
+  const insets = useSafeAreaInsets();
   const [albums, setAlbums] = useState<Album[]>([]);
   const [isLoading, setIsLoading] = useState(true);
   const [isRefreshing, setIsRefreshing] = useState(false);
@@ -215,22 +217,44 @@ export default function AlbumsScreen() {
     return `${API_CONFIG.BASE_URL.replace('/api/v1', '')}${album.cover_photo_url}`;
   };
 
+  const safeAreaEdges = ['top'] as const;
+  const containerStyle = Platform.OS === 'android' 
+    ? [styles.container, {paddingBottom: Math.max(insets.bottom, 16)}]
+    : styles.container;
+
   if (isLoading && albums.length === 0) {
     return (
-      <SafeAreaView style={styles.container} edges={['top']}>
-        <View style={styles.header}>
-          <Text style={styles.title}>Albums</Text>
-        </View>
-        <View style={styles.loadingContainer}>
-          <ActivityIndicator size="large" color="#000000" />
-          <Text style={styles.loadingText}>Loading albums...</Text>
-        </View>
-      </SafeAreaView>
+      <>
+        {Platform.OS === 'android' && (
+          <StatusBar
+            barStyle="dark-content"
+            backgroundColor="#ffffff"
+            translucent={false}
+          />
+        )}
+        <SafeAreaView style={containerStyle} edges={safeAreaEdges}>
+          <View style={styles.header}>
+            <Text style={styles.title}>Albums</Text>
+          </View>
+          <View style={styles.loadingContainer}>
+            <ActivityIndicator size="large" color="#000000" />
+            <Text style={styles.loadingText}>Loading albums...</Text>
+          </View>
+        </SafeAreaView>
+      </>
     );
   }
 
   return (
-    <SafeAreaView style={styles.container} edges={['top']}>
+    <>
+      {Platform.OS === 'android' && (
+        <StatusBar
+          barStyle="dark-content"
+          backgroundColor="#ffffff"
+          translucent={false}
+        />
+      )}
+      <SafeAreaView style={containerStyle} edges={safeAreaEdges}>
       <View style={styles.header}>
         <Text style={styles.title}>Albums</Text>
       </View>
@@ -417,7 +441,8 @@ export default function AlbumsScreen() {
         onClose={handleCloseCreateModal}
         onSuccess={handleAlbumCreated}
       />
-    </SafeAreaView>
+      </SafeAreaView>
+    </>
   );
 }
 

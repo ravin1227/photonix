@@ -15,6 +15,9 @@ Rails.application.routes.draw do
 
       # Photos
       resources :photos, only: [:index, :show, :create, :destroy] do
+        collection do
+          post 'check_bulk_upload', to: 'photos#check_bulk_upload'
+        end
         member do
           get 'download'
           get 'thumbnail/:size', to: 'photos#thumbnail', as: 'thumbnail'

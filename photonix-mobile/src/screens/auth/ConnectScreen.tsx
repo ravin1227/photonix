@@ -1,5 +1,6 @@
 import React from 'react';
 import {View, Text, StyleSheet, TouchableOpacity} from 'react-native';
+import {useSafeAreaInsets} from 'react-native-safe-area-context';
 import {useNavigation} from '@react-navigation/native';
 import {NativeStackNavigationProp} from '@react-navigation/native-stack';
 import {AuthStackParamList} from '../../navigation/AuthNavigator';
@@ -11,11 +12,12 @@ type ConnectScreenNavigationProp = NativeStackNavigationProp<
 
 export default function ConnectScreen() {
   const navigation = useNavigation<ConnectScreenNavigationProp>();
+  const insets = useSafeAreaInsets();
 
   return (
     <View style={styles.container}>
       {/* Top Navigation Bar */}
-      <View style={styles.navBar}>
+      <View style={[styles.navBar, {paddingTop: insets.top + 8}]}>
         <TouchableOpacity
           style={styles.backButton}
           onPress={() => navigation.goBack()}>
@@ -60,7 +62,7 @@ export default function ConnectScreen() {
       </View>
 
       {/* Bottom Help Text */}
-      <View style={styles.helpSection}>
+      <View style={[styles.helpSection, {paddingBottom: insets.bottom + 24}]}>
         <Text style={styles.helpText}>
           Make sure you're on the same network
         </Text>
@@ -79,9 +81,7 @@ const styles = StyleSheet.create({
     alignItems: 'center',
     justifyContent: 'space-between',
     paddingHorizontal: 16,
-    paddingTop: 60,
     paddingBottom: 16,
-    height: 80,
   },
   backButton: {
     width: 40,
@@ -164,7 +164,6 @@ const styles = StyleSheet.create({
     color: '#666666',
   },
   helpSection: {
-    paddingBottom: 32,
     alignItems: 'center',
   },
   helpText: {

@@ -13,6 +13,7 @@ import {
   Share,
   Alert,
   ScrollView,
+  Platform,
 } from 'react-native';
 import {SafeAreaView, useSafeAreaInsets} from 'react-native-safe-area-context';
 import Icon from 'react-native-vector-icons/Ionicons';
@@ -770,7 +771,11 @@ export default function PhotoViewerScreen() {
 
   return (
     <View style={styles.container}>
-      <StatusBar barStyle="light-content" translucent={false} />
+      <StatusBar
+        barStyle="light-content"
+        translucent={Platform.OS === 'android'}
+        backgroundColor={Platform.OS === 'android' ? 'transparent' : undefined}
+      />
       
           {/* Full Screen Image */}
           <View

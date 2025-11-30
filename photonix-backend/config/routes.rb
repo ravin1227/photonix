@@ -13,6 +13,9 @@ Rails.application.routes.draw do
       post 'auth/login', to: 'authentication#login'
       post 'auth/qr_login', to: 'authentication#qr_login'
 
+      # Users
+      get 'users/search', to: 'users#search'
+
       # Photos
       resources :photos, only: [:index, :show, :create, :destroy] do
         collection do

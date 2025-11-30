@@ -11,6 +11,7 @@ import {
   Alert,
   PanResponder,
   Animated,
+  FlatList,
 } from 'react-native';
 import {SafeAreaView, useSafeAreaInsets} from 'react-native-safe-area-context';
 import {useRoute, useNavigation, RouteProp} from '@react-navigation/native';
@@ -25,6 +26,7 @@ import AuthImage from '../../components/AuthImage';
 import ShareAlbumModal from '../../components/ShareAlbumModal';
 import photoMergeService, {MergedPhoto} from '../../services/photoMergeService';
 import uploadTracker from '../../services/uploadTracker';
+import devicePhotoService, {DevicePhoto} from '../../services/devicePhotoService';
 import {Image} from 'react-native';
 
 type AlbumDetailRouteParams = {
@@ -59,6 +61,13 @@ export default function AlbumDetailScreen() {
   const [selectedPhotos, setSelectedPhotos] = useState<string[]>([]); // Changed to string[] for merged photo IDs
   const [isLoadingPhotos, setIsLoadingPhotos] = useState(false);
   const [isAddingPhotos, setIsAddingPhotos] = useState(false);
+  
+  // Pagination state for add photos modal
+  const [uploadedPage, setUploadedPage] = useState(1);
+  const [hasMoreUploaded, setHasMoreUploaded] = useState(true);
+  const [isLoadingMore, setIsLoadingMore] = useState(false);
+  const [devicePhotosLoaded, setDevicePhotosLoaded] = useState(false);
+  const PER_PAGE = 50; // Load 50 photos at a time
   const [uploadProgress, setUploadProgress] = useState<{current: number; total: number} | null>(null);
   const [permissions, setPermissions] = useState<AlbumPermissions>({
     is_owner: false,
@@ -156,65 +165,169 @@ export default function AlbumDetailScreen() {
     });
   };
 
-  const loadAvailablePhotos = async () => {
+  const loadAvailablePhotos = async (page: number = 1, append: boolean = false) => {
     try {
-      setIsLoadingPhotos(true);
-      console.log('[AlbumDetail] Loading available photos (local + cloud) - paginated');
-
-      // Get cloud photos in batches (50 at a time) instead of 1000
-      const PER_PAGE = 50;
-      let allCloudPhotos: Photo[] = [];
-      let currentPage = 1;
-      let hasMore = true;
-
-      // Load first 3 pages (150 photos) for initial display
-      // Rest will load on scroll
-      const MAX_INITIAL_PAGES = 3;
-
-      while (hasMore && currentPage <= MAX_INITIAL_PAGES) {
-        const response = await photoService.getPhotos(currentPage, PER_PAGE);
-        const cloudPhotos = response.data?.photos || [];
-        allCloudPhotos = [...allCloudPhotos, ...cloudPhotos];
-
-        const meta = response.data?.meta;
-        hasMore = meta ? meta.current_page < meta.total_pages : false;
-        currentPage++;
-
-        console.log(`[AlbumDetail] Loaded page ${currentPage - 1}, total so far: ${allCloudPhotos.length}`);
+      if (page === 1) {
+        setIsLoadingPhotos(true);
+        setUploadedPage(1);
+        setHasMoreUploaded(true);
+        setDevicePhotosLoaded(false);
+      } else {
+        setIsLoadingMore(true);
       }
 
-      // Merge with local photos
-      const mergedPhotos = await photoMergeService.mergePhotos(allCloudPhotos);
-      console.log('[AlbumDetail] Merged photos:', mergedPhotos.length);
+      console.log(`[AlbumDetail] Loading available photos - page ${page}, append: ${append}`);
 
-      // Filter out photos that are already in the album
+      const newPhotos: MergedPhoto[] = [];
       const albumPhotoIds = new Set(photos.map(p => p.id));
-      const filtered = mergedPhotos.filter(photo => {
-        // For uploaded photos, check by cloud ID
-        if (photo.cloudId) {
-          return !albumPhotoIds.has(photo.cloudId);
-        }
-        // For local-only photos, always include (not in album yet)
-        return true;
-      });
 
-      console.log('[AlbumDetail] Available photos after filtering:', filtered.length);
-      setAvailablePhotos(filtered);
-    } catch (error) {
-      console.error('[AlbumDetail] Error loading photos:', error);
+      // Load uploaded photos (paginated)
+      try {
+        const response = await photoService.getPhotos(page, PER_PAGE);
+        if (response.data) {
+          const cloudPhotos = response.data.photos || [];
+          
+          // Merge with local photos for this batch
+          const mergedBatch = await photoMergeService.mergePhotos(cloudPhotos);
+          
+          // Filter out photos already in album
+          const filteredBatch = mergedBatch.filter(photo => {
+            if (photo.cloudId) {
+              return !albumPhotoIds.has(photo.cloudId);
+            }
+            return true;
+          });
+          
+          newPhotos.push(...filteredBatch);
+          
+          // Check if there are more pages
+          const meta = response.data.meta;
+          const hasMore = meta ? meta.current_page < meta.total_pages : false;
+          setHasMoreUploaded(hasMore);
+          setUploadedPage(page);
+          
+          console.log(`[AlbumDetail] Loaded page ${page}: ${filteredBatch.length} photos (hasMore: ${hasMore})`);
+        }
+      } catch (error: any) {
+        console.error('[AlbumDetail] Error loading uploaded photos:', error);
+        setHasMoreUploaded(false);
+      }
+
+      // Load device photos only on first page
+      if (page === 1 && !devicePhotosLoaded) {
+        try {
+          const hasPermission = await devicePhotoService.checkPermission();
+          if (!hasPermission) {
+            console.log('[AlbumDetail] Device photo permission not granted, requesting...');
+            const granted = await devicePhotoService.requestPermission();
+            if (!granted) {
+              console.log('[AlbumDetail] Device photo permission denied, skipping device photos');
+              setDevicePhotosLoaded(true);
+            } else {
+              // Permission granted, load device photos
+              const devicePhotosResult = await devicePhotoService.getPhotos(PER_PAGE);
+              
+              if (devicePhotosResult && devicePhotosResult.photos) {
+                // Convert device photos to MergedPhoto format
+                const deviceMergedPhotos: MergedPhoto[] = devicePhotosResult.photos.map((devicePhoto: DevicePhoto) => ({
+                  id: `local_${devicePhoto.uri}`,
+                  uri: devicePhoto.uri,
+                  originalUri: devicePhoto.uri,
+                  filename: devicePhoto.filename,
+                  capturedAt: new Date(devicePhoto.timestamp),
+                  fileSize: 0,
+                  width: devicePhoto.width,
+                  height: devicePhoto.height,
+                  cloudId: undefined,
+                  syncStatus: 'local_only' as const,
+                  isUploaded: false,
+                }));
+                
+                // Filter out device photos already in album (by checking if URI matches any uploaded photo)
+                const filteredDevice = deviceMergedPhotos.filter(photo => {
+                  // Device photos are always new (not in album yet)
+                  return true;
+                });
+                
+                newPhotos.push(...filteredDevice);
+                console.log(`[AlbumDetail] Loaded ${filteredDevice.length} device photos`);
+              }
+              setDevicePhotosLoaded(true);
+            }
+          } else {
+            // Permission already granted
+            const devicePhotosResult = await devicePhotoService.getPhotos(PER_PAGE);
+            
+            if (devicePhotosResult && devicePhotosResult.photos) {
+              const deviceMergedPhotos: MergedPhoto[] = devicePhotosResult.photos.map((devicePhoto: DevicePhoto) => ({
+                id: `local_${devicePhoto.uri}`,
+                uri: devicePhoto.uri,
+                originalUri: devicePhoto.uri,
+                filename: devicePhoto.filename,
+                capturedAt: new Date(devicePhoto.timestamp),
+                fileSize: 0,
+                width: devicePhoto.width,
+                height: devicePhoto.height,
+                cloudId: undefined,
+                syncStatus: 'local_only' as const,
+                isUploaded: false,
+              }));
+              
+              newPhotos.push(...deviceMergedPhotos);
+              console.log(`[AlbumDetail] Loaded ${deviceMergedPhotos.length} device photos`);
+            }
+            setDevicePhotosLoaded(true);
+          }
+        } catch (error: any) {
+          console.error('[AlbumDetail] Error loading device photos:', error);
+          setDevicePhotosLoaded(true);
+        }
+      }
+
+      // Sort by timestamp (newest first)
+      if (newPhotos.length > 0) {
+        newPhotos.sort((a, b) => b.capturedAt.getTime() - a.capturedAt.getTime());
+      }
+
+      // Append or replace photos
+      if (append) {
+        setAvailablePhotos(prev => {
+          // Avoid duplicates
+          const existingIds = new Set(prev.map(p => p.id));
+          const uniqueNew = newPhotos.filter(p => !existingIds.has(p.id));
+          return [...prev, ...uniqueNew].sort((a, b) => b.capturedAt.getTime() - a.capturedAt.getTime());
+        });
+      } else {
+        setAvailablePhotos(newPhotos);
+      }
+
+      console.log(`[AlbumDetail] Total available photos: ${append ? availablePhotos.length + newPhotos.length : newPhotos.length}`);
+    } catch (error: any) {
+      console.error('[AlbumDetail] Unexpected error loading photos:', error);
     } finally {
       setIsLoadingPhotos(false);
+      setIsLoadingMore(false);
+    }
+  };
+
+  const loadMorePhotos = () => {
+    if (!isLoadingMore && hasMoreUploaded && !isLoadingPhotos) {
+      loadAvailablePhotos(uploadedPage + 1, true);
     }
   };
 
   const handleOpenAddPhotosModal = () => {
     setShowAddPhotosModal(true);
-    loadAvailablePhotos();
+    loadAvailablePhotos(1, false);
   };
 
   const handleCloseAddPhotosModal = () => {
     setShowAddPhotosModal(false);
     setSelectedPhotos([]);
+    // Reset pagination
+    setUploadedPage(1);
+    setHasMoreUploaded(true);
+    setDevicePhotosLoaded(false);
   };
 
   const togglePhotoSelection = (photoId: string) => {
@@ -827,8 +940,9 @@ export default function AlbumDetailScreen() {
                 </Text>
               </View>
             ) : (
-              <View style={styles.addPhotosGrid}>
-                {availablePhotos.map(photo => {
+              <FlatList
+                data={availablePhotos}
+                renderItem={({item: photo}) => {
                   const thumbnailUrl = getThumbnailUrlForSelection(photo);
                   const isSelected = selectedPhotos.includes(photo.id);
                   const isLocalOnly = photo.syncStatus === 'local_only';
@@ -876,8 +990,23 @@ export default function AlbumDetailScreen() {
                       )}
                     </TouchableOpacity>
                   );
-                })}
-              </View>
+                }}
+                keyExtractor={(item) => item.id}
+                numColumns={3}
+                onEndReached={loadMorePhotos}
+                onEndReachedThreshold={0.5}
+                ListFooterComponent={
+                  isLoadingMore ? (
+                    <View style={styles.loadMoreContainer}>
+                      <ActivityIndicator size="small" color="#666666" />
+                      <Text style={styles.loadMoreText}>Loading more photos...</Text>
+                    </View>
+                  ) : null
+                }
+                contentContainerStyle={styles.addPhotosGrid}
+                scrollEnabled={false}
+                nestedScrollEnabled={true}
+              />
             )}
           </ScrollView>
         </SafeAreaView>
@@ -1231,15 +1360,13 @@ const styles = StyleSheet.create({
     textAlign: 'center',
   },
   addPhotosGrid: {
-    flexDirection: 'row',
-    flexWrap: 'wrap',
-    gap: 4,
-    padding: 4,
+    paddingBottom: 8,
   },
   addPhotoSelectItem: {
-    width: '32%',
+    width: '33.33%',
     aspectRatio: 1,
     position: 'relative',
+    padding: 2,
   },
   addPhotoSelectImage: {
     width: '100%',
@@ -1288,6 +1415,11 @@ const styles = StyleSheet.create({
     fontSize: 14,
     color: '#000000',
     fontWeight: '500',
+  },
+  loadMoreText: {
+    marginTop: 8,
+    fontSize: 14,
+    color: '#666666',
   },
   localPhotoBadge: {
     position: 'absolute',

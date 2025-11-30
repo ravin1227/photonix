@@ -22,6 +22,16 @@ export interface AlbumSharesResponse {
   };
 }
 
+export interface UserSearchResult {
+  id: number;
+  name: string;
+  email: string;
+}
+
+export interface UserSearchResponse {
+  users: UserSearchResult[];
+}
+
 class AlbumSharingService {
   // Get list of users album is shared with
   async getAlbumShares(albumId: number) {
@@ -57,6 +67,11 @@ class AlbumSharingService {
         can_contribute: canContribute,
       }
     );
+  }
+
+  // Search users by name or email
+  async searchUsers(query: string) {
+    return apiService.get<UserSearchResponse>(`/users/search?q=${encodeURIComponent(query)}`);
   }
 }
 

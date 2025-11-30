@@ -60,6 +60,15 @@ target 'PhotonixMobile' do
           end
         end
       end
+      
+      # Fix RNFS compilation issues
+      if target.name == 'RNFS'
+        target.build_configurations.each do |config|
+          # Disable strict warnings that might cause build failures
+          config.build_settings['GCC_WARN_INHIBIT_ALL_WARNINGS'] = 'YES'
+          config.build_settings['CLANG_WARN_QUOTED_INCLUDE_IN_FRAMEWORK_HEADER'] = 'NO'
+        end
+      end
     end
   end
 end

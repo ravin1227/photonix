@@ -11,6 +11,7 @@ import {
   ActivityIndicator,
   Alert,
 } from 'react-native';
+import {useSafeAreaInsets} from 'react-native-safe-area-context';
 import {useNavigation} from '@react-navigation/native';
 import {NativeStackNavigationProp} from '@react-navigation/native-stack';
 import {AuthStackParamList} from '../../navigation/AuthNavigator';
@@ -25,6 +26,7 @@ type LoginScreenNavigationProp = NativeStackNavigationProp<
 export default function LoginScreen() {
   const navigation = useNavigation<LoginScreenNavigationProp>();
   const {login} = useAuth();
+  const insets = useSafeAreaInsets();
   const [email, setEmail] = useState('');
   const [password, setPassword] = useState('');
   const [showPassword, setShowPassword] = useState(false);
@@ -56,7 +58,7 @@ export default function LoginScreen() {
       behavior={Platform.OS === 'ios' ? 'padding' : undefined}
       keyboardVerticalOffset={Platform.OS === 'ios' ? 0 : 0}>
       {/* Top Navigation Bar - Fixed */}
-      <View style={styles.navBar}>
+      <View style={[styles.navBar, {paddingTop: insets.top + 8}]}>
         <TouchableOpacity
           style={styles.backButton}
           onPress={() => navigation.goBack()}>
@@ -159,9 +161,7 @@ const styles = StyleSheet.create({
     alignItems: 'center',
     justifyContent: 'space-between',
     paddingHorizontal: 16,
-    paddingTop: Platform.OS === 'ios' ? 60 : 20,
     paddingBottom: 16,
-    height: Platform.OS === 'ios' ? 80 : 60,
     backgroundColor: '#ffffff',
     zIndex: 10,
   },

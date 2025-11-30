@@ -1,10 +1,24 @@
 import React from 'react';
-import {View, Text, StyleSheet, TextInput, ScrollView, TouchableOpacity} from 'react-native';
-import {SafeAreaView} from 'react-native-safe-area-context';
+import {View, Text, StyleSheet, TextInput, ScrollView, TouchableOpacity, Platform, StatusBar} from 'react-native';
+import {SafeAreaView, useSafeAreaInsets} from 'react-native-safe-area-context';
 
 export default function SearchScreen() {
+  const insets = useSafeAreaInsets();
+  const safeAreaEdges = ['top'] as const;
+  const containerStyle = Platform.OS === 'android' 
+    ? [styles.container, {paddingBottom: Math.max(insets.bottom, 16)}]
+    : styles.container;
+
   return (
-    <SafeAreaView style={styles.container} edges={['top']}>
+    <>
+      {Platform.OS === 'android' && (
+        <StatusBar
+          barStyle="dark-content"
+          backgroundColor="#ffffff"
+          translucent={false}
+        />
+      )}
+      <SafeAreaView style={containerStyle} edges={safeAreaEdges}>
       {/* Search Bar */}
       <View style={styles.searchBar}>
         <TextInput
@@ -45,7 +59,8 @@ export default function SearchScreen() {
           </ScrollView>
         </View>
       </ScrollView>
-    </SafeAreaView>
+      </SafeAreaView>
+    </>
   );
 }
 

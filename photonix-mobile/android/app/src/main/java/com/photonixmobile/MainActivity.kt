@@ -1,5 +1,12 @@
 package com.photonixmobile
 
+import android.graphics.Color
+import android.os.Build
+import android.os.Bundle
+import android.view.View
+import android.view.WindowManager
+import androidx.core.view.WindowCompat
+import androidx.core.view.WindowInsetsControllerCompat
 import com.facebook.react.ReactActivity
 import com.facebook.react.ReactActivityDelegate
 import com.facebook.react.defaults.DefaultNewArchitectureEntryPoint.fabricEnabled
@@ -19,4 +26,30 @@ class MainActivity : ReactActivity() {
    */
   override fun createReactActivityDelegate(): ReactActivityDelegate =
       DefaultReactActivityDelegate(this, mainComponentName, fabricEnabled)
+
+  /**
+   * Enable edge-to-edge display on Android
+   */
+  override fun onCreate(savedInstanceState: Bundle?) {
+    super.onCreate(savedInstanceState)
+
+    // Enable edge-to-edge layout
+    WindowCompat.setDecorFitsSystemWindows(window, false)
+
+    // Set system bar colors to transparent
+    window.statusBarColor = Color.TRANSPARENT
+    window.navigationBarColor = Color.TRANSPARENT
+
+    // For Android 10+ (API 29+), disable navigation bar contrast
+    if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.Q) {
+      window.isNavigationBarContrastEnforced = false
+    }
+
+    // Configure appearance of system bar icons
+    WindowCompat.getInsetsController(window, window.decorView)?.let { controller ->
+      // Use light system bars (dark icons) for light background
+      controller.isAppearanceLightStatusBars = true
+      controller.isAppearanceLightNavigationBars = true
+    }
+  }
 }

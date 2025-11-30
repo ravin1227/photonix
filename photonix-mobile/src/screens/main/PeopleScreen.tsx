@@ -7,9 +7,11 @@ import {
   TouchableOpacity,
   ActivityIndicator,
   RefreshControl,
+  Platform,
+  StatusBar,
 } from 'react-native';
 import AuthenticatedImage from '../../components/AuthenticatedImage';
-import {SafeAreaView} from 'react-native-safe-area-context';
+import {SafeAreaView, useSafeAreaInsets} from 'react-native-safe-area-context';
 import {useNavigation, useFocusEffect} from '@react-navigation/native';
 import {NativeStackNavigationProp} from '@react-navigation/native-stack';
 import peopleService, {Person} from '../../services/peopleService';
@@ -23,6 +25,7 @@ type PeopleScreenNavigationProp = NativeStackNavigationProp<
 
 export default function PeopleScreen() {
   const navigation = useNavigation<PeopleScreenNavigationProp>();
+  const insets = useSafeAreaInsets();
   const [people, setPeople] = useState<Person[]>([]);
   const [isLoading, setIsLoading] = useState(true);
   const [isRefreshing, setIsRefreshing] = useState(false);
@@ -116,9 +119,22 @@ export default function PeopleScreen() {
     return normalizeThumbnailUrl(person.thumbnail_url);
   };
 
+  const safeAreaEdges = ['top'] as const;
+  const containerStyle = Platform.OS === 'android' 
+    ? [styles.container, {paddingBottom: Math.max(insets.bottom, 16)}]
+    : styles.container;
+
   return (
-    <SafeAreaView style={styles.container} edges={['top']}>
-      <View style={styles.header}>
+    <>
+      {Platform.OS === 'android' && (
+        <StatusBar
+          barStyle="dark-content"
+          backgroundColor="#ffffff"
+          translucent={false}
+        />
+      )}
+      <SafeAreaView style={containerStyle} edges={safeAreaEdges}>
+        <View style={styles.header}>
         <Text style={styles.title}>People</Text>
       </View>
 
@@ -129,7 +145,7 @@ export default function PeopleScreen() {
       ) : error ? (
         <View style={styles.errorContainer}>
           <Text style={styles.errorText}>{error}</Text>
-          <TouchableOpacity style={styles.retryButton} onPress={loadPeople}>
+          <TouchableOpacity style={styles.retryButton} onPress={() => loadPeople()}>
             <Text style={styles.retryButtonText}>Retry</Text>
           </TouchableOpacity>
         </View>
@@ -176,7 +192,8 @@ export default function PeopleScreen() {
           </TouchableOpacity>
         </ScrollView>
       )}
-    </SafeAreaView>
+      </SafeAreaView>
+    </>
   );
 }
 

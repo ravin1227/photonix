@@ -1,5 +1,6 @@
 import React from 'react';
 import {View, Text, StyleSheet, TouchableOpacity} from 'react-native';
+import {useSafeAreaInsets} from 'react-native-safe-area-context';
 import {useNavigation} from '@react-navigation/native';
 import {NativeStackNavigationProp} from '@react-navigation/native-stack';
 import {AuthStackParamList} from '../../navigation/AuthNavigator';
@@ -11,11 +12,12 @@ type WelcomeScreenNavigationProp = NativeStackNavigationProp<
 
 export default function WelcomeScreen() {
   const navigation = useNavigation<WelcomeScreenNavigationProp>();
+  const insets = useSafeAreaInsets();
 
   return (
     <View style={styles.container}>
       {/* Center Section */}
-      <View style={styles.centerSection}>
+      <View style={[styles.centerSection, {paddingTop: insets.top}]}>
         {/* App Icon Placeholder */}
         <View style={styles.iconPlaceholder} />
 
@@ -27,7 +29,7 @@ export default function WelcomeScreen() {
       </View>
 
       {/* Bottom Section */}
-      <View style={styles.bottomSection}>
+      <View style={[styles.bottomSection, {paddingBottom: insets.bottom + 16}]}>
         {/* Primary Button */}
         <TouchableOpacity
           style={styles.primaryButton}
@@ -53,8 +55,6 @@ const styles = StyleSheet.create({
     flex: 1,
     backgroundColor: '#ffffff',
     justifyContent: 'space-between',
-    paddingTop: 60,
-    paddingBottom: 40,
   },
   centerSection: {
     flex: 1,

@@ -9,8 +9,10 @@ import {
   RefreshControl,
   Alert,
   FlatList,
+  Platform,
+  StatusBar,
 } from 'react-native';
-import {SafeAreaView} from 'react-native-safe-area-context';
+import {SafeAreaView, useSafeAreaInsets} from 'react-native-safe-area-context';
 import {useNavigation, useRoute, RouteProp} from '@react-navigation/native';
 import {NativeStackNavigationProp} from '@react-navigation/native-stack';
 import Icon from 'react-native-vector-icons/Ionicons';
@@ -113,6 +115,7 @@ PhotoThumbnail.displayName = 'PhotoThumbnail';
 export default function HomeScreen() {
   const navigation = useNavigation<HomeScreenNavigationProp>();
   const route = useRoute<HomeScreenRouteProp>();
+  const insets = useSafeAreaInsets();
   const [activeFilter, setActiveFilter] = useState<FilterType>('Recent');
   const [photos, setPhotos] = useState<Photo[]>([]);
   const [mergedPhotos, setMergedPhotos] = useState<MergedPhoto[]>([]); // NEW: Unified timeline
@@ -1546,10 +1549,27 @@ export default function HomeScreen() {
     }
   };
 
+  // Platform-specific safe area edges
+  // On Android, only handle top (StatusBar), bottom will be handled with padding
+  const safeAreaEdges = ['top'] as const;
+
+  // Add bottom padding for Android navigation bar
+  const containerStyle = Platform.OS === 'android' 
+    ? [styles.container, {paddingBottom: Math.max(insets.bottom, 16)}]
+    : styles.container;
+
   return (
-    <SafeAreaView style={styles.container} edges={['top']}>
-      {/* Network Status Banner */}
-      <NetworkStatusBanner />
+    <>
+      {Platform.OS === 'android' && (
+        <StatusBar
+          barStyle="dark-content"
+          backgroundColor="#ffffff"
+          translucent={false}
+        />
+      )}
+      <SafeAreaView style={containerStyle} edges={safeAreaEdges}>
+        {/* Network Status Banner */}
+        <NetworkStatusBanner />
 
       {/* Top Navigation Bar */}
       <View style={styles.navBar}>
@@ -1608,7 +1628,8 @@ export default function HomeScreen() {
         onClose={handleCloseCreateModal}
         onSuccess={handleAlbumCreated}
       />
-    </SafeAreaView>
+      </SafeAreaView>
+    </>
   );
 }
 

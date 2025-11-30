@@ -869,9 +869,21 @@ export default function HomeScreen() {
         [date]: {isUploading: true, uploaded: 0, total: localPhotos.length},
       }));
 
-      // STEP 1: Prepare photo URIs (convert ph:// to file:// for iOS)
+      // STEP 1: Prepare photo URIs
+      // Note: FormData on iOS can handle ph:// URIs directly, so we don't need to convert them
+      // We only convert for hash calculation (if react-native-fs is available)
       const photosWithUris: Array<{photo: MergedPhoto; uri: string; tempFilePath?: string}> = [];
       const tempFilesToCleanup: string[] = [];
+      let canCalculateHashes = false;
+
+      // Check if react-native-fs is available for hash calculation
+      try {
+        const RNFS = require('react-native-fs').default;
+        canCalculateHashes = !!RNFS && !!RNFS.TemporaryDirectoryPath;
+      } catch (error) {
+        console.warn('[HomeScreen] react-native-fs not available, will skip hash-based deduplication');
+        canCalculateHashes = false;
+      }
 
       for (const photo of localPhotos) {
         let photoUri = photo.originalUri || photo.uri;
@@ -880,29 +892,29 @@ export default function HomeScreen() {
           continue;
         }
 
-        // Convert ph:// URIs to file:// URIs for iOS uploads
+        // For hash calculation, we need to convert ph:// to file:// if react-native-fs is available
+        // But for upload, FormData can handle ph:// URIs directly on iOS
         let tempFilePath: string | undefined;
-        if (photoUri.startsWith('ph://')) {
+        if (photoUri.startsWith('ph://') && canCalculateHashes) {
           try {
             const RNFS = require('react-native-fs').default;
-            if (!RNFS) {
-              console.warn('[HomeScreen] react-native-fs not available, skipping ph:// conversion');
-              continue;
-            }
             const fileExtension = photo.filename.split('.').pop() || 'jpg';
             const tempFileName = `photonix_hash_${Date.now()}_${Math.random().toString(36).substring(7)}.${fileExtension}`;
             const destPath = `${RNFS.TemporaryDirectoryPath}/${tempFileName}`;
             await RNFS.copyAssetsFileIOS(photoUri, destPath, 0, 0);
             tempFilePath = destPath;
             tempFilesToCleanup.push(destPath);
-            photoUri = `file://${destPath}`;
+            // Keep original ph:// URI for upload, use temp file only for hash
+            photosWithUris.push({photo, uri: photoUri, tempFilePath});
           } catch (error: any) {
-            console.error('[HomeScreen] Error converting ph:// URI to file URI:', error);
-            continue;
+            console.warn('[HomeScreen] Error converting ph:// URI for hash calculation, will upload without hash:', error.message);
+            // Still add the photo, just without hash calculation
+            photosWithUris.push({photo, uri: photoUri});
           }
+        } else {
+          // Use ph:// URI directly (FormData can handle it on iOS)
+          photosWithUris.push({photo, uri: photoUri, tempFilePath});
         }
-
-        photosWithUris.push({photo, uri: photoUri, tempFilePath});
       }
 
       if (photosWithUris.length === 0) {
@@ -914,55 +926,91 @@ export default function HomeScreen() {
         return;
       }
 
-      // STEP 2: Calculate SHA-1 hashes for all photos (keep temp files for ph:// URIs)
-      console.log('[HomeScreen] Calculating SHA-1 hashes for', photosWithUris.length, 'photos...');
-      const photoUris = photosWithUris.map(p => p.uri);
-      const hashResults = await calculateFileHashes(photoUris, true); // Keep temp files for reuse
+      // STEP 2: Calculate SHA-1 hashes for all photos (only if react-native-fs is available)
+      let hashResults: Array<{hash: string; tempFilePath?: string} | null> = [];
+      if (canCalculateHashes) {
+        console.log('[HomeScreen] Calculating SHA-1 hashes for', photosWithUris.length, 'photos...');
+        const photoUris = photosWithUris.map(p => p.tempFilePath ? `file://${p.tempFilePath}` : p.uri);
+        hashResults = await calculateFileHashes(photoUris, true).catch(error => {
+          console.warn('[HomeScreen] Hash calculation failed, continuing without deduplication:', error);
+          return photosWithUris.map(() => null);
+        });
+      } else {
+        console.log('[HomeScreen] Skipping hash calculation (react-native-fs not available), will upload all photos');
+        hashResults = photosWithUris.map(() => null);
+      }
       
       // Combine hash results with photo data
+      // Include photos even if hash calculation failed (for upload without deduplication)
       const photosWithHashes: Array<{
         photo: MergedPhoto;
         uri: string;
         tempFilePath?: string;
-        hash: string;
+        hash?: string; // Optional - may be missing if react-native-fs is not available
       }> = [];
       
       for (let i = 0; i < photosWithUris.length; i++) {
         const hashResult = hashResults[i];
+        const photoData = photosWithUris[i];
+        
         if (hashResult && hashResult.hash) {
-          // Use temp file from hash calculation if available, otherwise use existing temp file
-          const tempFilePath = hashResult.tempFilePath || photosWithUris[i].tempFilePath;
+          // Hash calculation succeeded
           photosWithHashes.push({
-            ...photosWithUris[i],
+            ...photoData,
             hash: hashResult.hash,
-            tempFilePath: tempFilePath || photosWithUris[i].tempFilePath,
-            uri: hashResult.tempFilePath ? `file://${hashResult.tempFilePath}` : photosWithUris[i].uri,
+            // Keep original ph:// URI for upload (FormData can handle it)
+            uri: photoData.uri,
+          });
+        } else {
+          // Hash calculation failed or skipped - include without hash
+          // Upload will proceed without deduplication check
+          console.log(`[HomeScreen] Including ${photoData.photo.filename} without hash (will upload without deduplication)`);
+          photosWithHashes.push({
+            ...photoData,
+            hash: undefined,
           });
         }
       }
 
-      console.log('[HomeScreen] Successfully hashed', photosWithHashes.length, 'photos');
+      const hashedCount = photosWithHashes.filter(p => p.hash).length;
+      console.log(`[HomeScreen] Successfully hashed ${hashedCount}/${photosWithHashes.length} photos`);
 
-      // STEP 3: Check which photos already exist on server
+      // STEP 3: Check which photos already exist on server (only for photos with hashes)
       console.log('[HomeScreen] Checking for existing photos on server...');
-      const checksums = photosWithHashes.map(p => p.hash);
-      const checkResult = await photoService.checkBulkUpload(checksums);
+      const photosWithHashesOnly = photosWithHashes.filter(p => p.hash);
+      const photosWithoutHashes = photosWithHashes.filter(p => !p.hash);
+      
+      let existingHashes = new Set<string>();
+      let existingPhotos: Record<string, any> = {};
+      
+      if (photosWithHashesOnly.length > 0) {
+        const checksums = photosWithHashesOnly.map(p => p.hash!).filter(Boolean) as string[];
+        const checkResult = await photoService.checkBulkUpload(checksums);
 
-      if (checkResult.error) {
-        console.error('[HomeScreen] Error checking bulk upload:', checkResult.error);
-        // Continue with upload anyway (fallback to old behavior)
+        if (checkResult.error) {
+          console.error('[HomeScreen] Error checking bulk upload:', checkResult.error);
+          // Continue with upload anyway (fallback to old behavior)
+        } else {
+          existingHashes = new Set(checkResult.data?.existing_hashes || []);
+          existingPhotos = checkResult.data?.existing_photos || {};
+        }
+      } else {
+        console.log('[HomeScreen] No photos with hashes to check for duplicates');
       }
 
-      const existingHashes = new Set(checkResult.data?.existing_hashes || []);
-      const existingPhotos = checkResult.data?.existing_photos || {};
-      const photosToUpload = photosWithHashes.filter(p => !existingHashes.has(p.hash));
-      const photosToSkip = photosWithHashes.filter(p => existingHashes.has(p.hash));
+      // Photos with hashes: filter duplicates
+      const photosToUpload = photosWithHashesOnly.filter(p => p.hash && !existingHashes.has(p.hash!));
+      const photosToSkip = photosWithHashesOnly.filter(p => p.hash && existingHashes.has(p.hash!));
+      
+      // Photos without hashes: upload all (no deduplication check)
+      photosToUpload.push(...photosWithoutHashes);
 
       console.log(`[HomeScreen] Deduplication results: ${photosToUpload.length} new, ${photosToSkip.length} duplicates`);
 
       // STEP 4: Mark skipped photos as uploaded (they already exist on server)
       let uploadedCount = photosToSkip.length;
       for (const {photo, hash} of photosToSkip) {
+        if (!hash) continue; // Skip if no hash
         const existingPhotoInfo = existingPhotos[hash];
         if (existingPhotoInfo?.id) {
           const cloudId = existingPhotoInfo.id;
@@ -1009,31 +1057,12 @@ export default function HomeScreen() {
         }));
       }
 
-      // STEP 5: Upload only new photos
-      for (const {photo, uri: photoUri, tempFilePath} of photosToUpload) {
-        // Use the temp file we created for hashing (if it exists)
-        // For ph:// URIs, we already created a temp file during hash calculation
-        let uploadUri = photoUri;
-        
-        // If we have a temp file from hashing, reuse it and add to cleanup
-        if (tempFilePath) {
-          uploadUri = photoUri; // Already points to temp file
-          tempFilesToCleanup.push(tempFilePath);
-        } else if ((photo.originalUri || photo.uri).startsWith('ph://')) {
-          // Create a new temp file for upload (for ph:// URIs that weren't converted during hash)
-          try {
-            const RNFS = require('react-native-fs').default;
-            const fileExtension = photo.filename.split('.').pop() || 'jpg';
-            const tempFileName = `photonix_upload_${Date.now()}_${Math.random().toString(36).substring(7)}.${fileExtension}`;
-            const destPath = `${RNFS.TemporaryDirectoryPath}/${tempFileName}`;
-            await RNFS.copyAssetsFileIOS(photo.originalUri || photo.uri, destPath, 0, 0);
-            uploadUri = `file://${destPath}`;
-            tempFilesToCleanup.push(destPath);
-          } catch (error: any) {
-            console.error('[HomeScreen] Error creating upload temp file:', error);
-            continue;
-          }
-        }
+       // STEP 5: Upload only new photos
+       // Note: FormData on iOS can handle ph:// URIs directly, so we don't need to convert them
+       for (const {photo, uri: photoUri} of photosToUpload) {
+         // Use the original URI directly - FormData can handle ph:// URIs on iOS
+         // No need to convert to file:// URI
+         const uploadUri = photoUri;
 
         const file = {
           uri: uploadUri,

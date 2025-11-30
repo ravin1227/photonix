@@ -28,6 +28,8 @@ import photoMergeService, {MergedPhoto} from '../../services/photoMergeService';
 import uploadTracker from '../../services/uploadTracker';
 import devicePhotoService, {DevicePhoto} from '../../services/devicePhotoService';
 import {Image} from 'react-native';
+import {pickPhotos, SelectedPhoto} from '../../components/PhotoPicker';
+import uploadTrackingService from '../../services/uploadTrackingService';
 
 type AlbumDetailRouteParams = {
   AlbumDetail: {
@@ -69,6 +71,8 @@ export default function AlbumDetailScreen() {
   const [devicePhotosLoaded, setDevicePhotosLoaded] = useState(false);
   const PER_PAGE = 50; // Load 50 photos at a time
   const [uploadProgress, setUploadProgress] = useState<{current: number; total: number} | null>(null);
+  // Track pending photos being added (placeholders with loading state)
+  const [pendingPhotos, setPendingPhotos] = useState<Map<string, {photo: MergedPhoto; status: 'uploading' | 'adding' | 'completed' | 'failed'; cloudId?: number}>>(new Map());
   const [permissions, setPermissions] = useState<AlbumPermissions>({
     is_owner: false,
     can_view: true,
@@ -316,9 +320,59 @@ export default function AlbumDetailScreen() {
     }
   };
 
-  const handleOpenAddPhotosModal = () => {
-    setShowAddPhotosModal(true);
-    loadAvailablePhotos(1, false);
+  const handleOpenAddPhotosModal = async () => {
+    try {
+      // Open native photo picker (same as album card + icon)
+      const selectedPhotos = await pickPhotos({maxSelection: 100});
+      
+      if (selectedPhotos.length === 0) {
+        return; // User cancelled
+      }
+
+      // Upload photos first
+      const uploadResponse = await photoService.uploadPhotos(selectedPhotos);
+
+      if (uploadResponse.error) {
+        Alert.alert('Upload Failed', uploadResponse.error);
+        return;
+      }
+
+      // Get uploaded photo IDs from response
+      const results = uploadResponse.data?.results || {};
+      const successful = results.successful || [];
+      const photoIds = successful.map((p: any) => p.photo?.id).filter(Boolean);
+
+      // Track uploaded photos
+      if (successful.length > 0) {
+        const trackingData = successful.map((result: any, index: number) => {
+          const photo = selectedPhotos[index];
+          return {
+            deviceId: photo.id || photo.uri,
+            serverPhotoId: result.photo?.id || 0,
+            filename: photo.name,
+          };
+        }).filter((item: any) => item.serverPhotoId > 0);
+        
+        if (trackingData.length > 0) {
+          await uploadTrackingService.trackUploadedPhotos(trackingData);
+        }
+      }
+
+      // Add photos to album
+      if (photoIds.length > 0) {
+        for (const photoId of photoIds) {
+          await albumService.addPhotoToAlbum(albumId, photoId);
+        }
+      }
+
+      // Refresh album photos
+      await loadPhotos(1);
+
+      Alert.alert('Success', `Added ${photoIds.length} photo(s) to album`);
+    } catch (error: any) {
+      console.error('[AlbumDetail] Error adding photos:', error);
+      Alert.alert('Error', error.message || 'Failed to add photos to album');
+    }
   };
 
   const handleCloseAddPhotosModal = () => {
@@ -347,7 +401,6 @@ export default function AlbumDetailScreen() {
     }
 
     try {
-      setIsAddingPhotos(true);
       console.log('[AlbumDetail] Adding photos to album:', selectedPhotos);
 
       // Get the actual photo objects from availablePhotos
@@ -360,78 +413,156 @@ export default function AlbumDetailScreen() {
       console.log('[AlbumDetail] Local photos to upload:', localPhotos.length);
       console.log('[AlbumDetail] Already uploaded photos:', uploadedPhotos.length);
 
+      // Step 1: Close modal immediately and add placeholders
+      handleCloseAddPhotosModal();
+
+      // Add placeholders for all photos being added
+      const newPending = new Map(pendingPhotos);
+      photosToAdd.forEach(photo => {
+        newPending.set(photo.id, {
+          photo,
+          status: photo.syncStatus === 'local_only' ? 'uploading' : 'adding',
+        });
+      });
+      setPendingPhotos(newPending);
+
+      // Step 2: Upload local photos in background
       const cloudPhotoIds: number[] = [];
 
-      // Step 1: Upload local photos first (like Google Photos!)
       if (localPhotos.length > 0) {
-        setUploadProgress({current: 0, total: localPhotos.length});
-
         for (let i = 0; i < localPhotos.length; i++) {
           const photo = localPhotos[i];
           console.log(`[AlbumDetail] Uploading ${i + 1}/${localPhotos.length}: ${photo.filename}`);
 
+          // Update pending photo status
+          setPendingPhotos(prev => {
+            const updated = new Map(prev);
+            const existing = updated.get(photo.id);
+            if (existing) {
+              updated.set(photo.id, {...existing, status: 'uploading'});
+            }
+            return updated;
+          });
+
           if (!photo.originalUri) {
             console.warn('[AlbumDetail] Skipping photo without originalUri:', photo.filename);
+            setPendingPhotos(prev => {
+              const updated = new Map(prev);
+              updated.delete(photo.id);
+              return updated;
+            });
             continue;
           }
 
-          const file = {
-            uri: photo.originalUri,
-            type: 'image/jpeg', // TODO: Get actual type from photo
-            name: photo.filename,
-          };
+          try {
+            const file = {
+              uri: photo.originalUri,
+              type: 'image/jpeg',
+              name: photo.filename,
+            };
 
-          const result = await photoService.uploadPhoto(file);
+            const result = await photoService.uploadPhoto(file);
 
-          if (result.data?.photo) {
-            const cloudId = result.data.photo.id;
-            cloudPhotoIds.push(cloudId);
+            if (result.data?.photo) {
+              const cloudId = result.data.photo.id;
+              cloudPhotoIds.push(cloudId);
 
-            // Track this upload
-            await uploadTracker.markAsUploaded(photo.originalUri, cloudId);
-            console.log('[AlbumDetail] Uploaded and tracked:', photo.filename, '→', cloudId);
+              // Track this upload
+              await uploadTracker.markAsUploaded(photo.originalUri, cloudId);
+              console.log('[AlbumDetail] Uploaded and tracked:', photo.filename, '→', cloudId);
 
-            setUploadProgress({current: i + 1, total: localPhotos.length});
-          } else {
-            console.error('[AlbumDetail] Upload failed for:', photo.filename, result.error);
+              // Update pending photo to "adding" status
+              setPendingPhotos(prev => {
+                const updated = new Map(prev);
+                const existing = updated.get(photo.id);
+                if (existing) {
+                  updated.set(photo.id, {...existing, status: 'adding', cloudId});
+                }
+                return updated;
+              });
+            } else {
+              console.error('[AlbumDetail] Upload failed for:', photo.filename, result.error);
+              setPendingPhotos(prev => {
+                const updated = new Map(prev);
+                updated.delete(photo.id);
+                return updated;
+              });
+            }
+          } catch (error: any) {
+            console.error('[AlbumDetail] Upload error for:', photo.filename, error);
+            setPendingPhotos(prev => {
+              const updated = new Map(prev);
+              updated.delete(photo.id);
+              return updated;
+            });
           }
         }
-
-        setUploadProgress(null);
       }
 
-      // Step 2: Add already-uploaded photos' IDs
+      // Step 3: Add already-uploaded photos' IDs
       uploadedPhotos.forEach(p => {
         if (p.cloudId) {
           cloudPhotoIds.push(p.cloudId);
         }
       });
 
+      // Step 4: Add all photos to album
       console.log('[AlbumDetail] Adding', cloudPhotoIds.length, 'photos to album');
 
-      // Step 3: Add all photos to album
-      const addPhotoPromises = cloudPhotoIds.map(photoId =>
-        albumService.addPhotoToAlbum(albumId, photoId),
-      );
+      const addPhotoPromises = cloudPhotoIds.map(async (photoId) => {
+        try {
+          await albumService.addPhotoToAlbum(albumId, photoId);
+          
+          // Find and update the pending photo
+          setPendingPhotos(prev => {
+            const updated = new Map(prev);
+            for (const [key, value] of updated.entries()) {
+              if (value.cloudId === photoId || (value.photo.cloudId === photoId)) {
+                updated.set(key, {...value, status: 'completed', cloudId: photoId});
+              }
+            }
+            return updated;
+          });
+        } catch (error: any) {
+          console.error('[AlbumDetail] Error adding photo to album:', photoId, error);
+          // Mark as failed
+          setPendingPhotos(prev => {
+            const updated = new Map(prev);
+            for (const [key, value] of updated.entries()) {
+              if (value.cloudId === photoId || (value.photo.cloudId === photoId)) {
+                updated.set(key, {...value, status: 'failed'});
+              }
+            }
+            return updated;
+          });
+        }
+      });
 
       await Promise.all(addPhotoPromises);
 
-      // Refresh album photos
-      await loadPhotos(1);
+      // Step 5: Refresh album photos after a short delay to let server process
+      setTimeout(async () => {
+        await loadPhotos(1);
+        
+        // Clear completed pending photos after refresh (give it a bit more time)
+        setTimeout(() => {
+          setPendingPhotos(prev => {
+            const updated = new Map(prev);
+            for (const [key, value] of updated.entries()) {
+              if (value.status === 'completed') {
+                updated.delete(key);
+              }
+            }
+            return updated;
+          });
+        }, 500);
+      }, 1500);
 
-      const message = localPhotos.length > 0
-        ? `Uploaded ${localPhotos.length} photo(s) and added ${cloudPhotoIds.length} photo(s) to album`
-        : `Added ${cloudPhotoIds.length} photo(s) to album`;
-
-      Alert.alert('Success', message, [
-        {text: 'OK', onPress: handleCloseAddPhotosModal},
-      ]);
     } catch (error: any) {
       console.error('[AlbumDetail] Error adding photos:', error);
+      // Clear all pending photos on error
+      setPendingPhotos(new Map());
       Alert.alert('Error', 'Failed to add photos: ' + (error.message || 'Unknown error'));
-    } finally {
-      setIsAddingPhotos(false);
-      setUploadProgress(null);
     }
   };
 
@@ -828,6 +959,64 @@ export default function AlbumDetailScreen() {
                       </View>
                     )}
                   </TouchableOpacity>
+                </View>
+              );
+            })}
+            
+            {/* Render pending photos (placeholders with loaders) */}
+            {Array.from(pendingPhotos.values()).map((pending, index) => {
+              const pendingId = `pending_${pending.photo.id}_${index}`;
+              const thumbnailUrl = pending.photo.syncStatus === 'local_only' 
+                ? pending.photo.uri 
+                : getThumbnailUrlForSelection(pending.photo);
+              
+              return (
+                <View
+                  key={pendingId}
+                  style={styles.photoContainer}>
+                  <View style={styles.photoThumbnail}>
+                    {thumbnailUrl && pending.status !== 'failed' ? (
+                      pending.photo.syncStatus === 'local_only' ? (
+                        <Image
+                          source={{uri: thumbnailUrl}}
+                          style={styles.photoImage}
+                          resizeMode="cover"
+                        />
+                      ) : (
+                        <AuthImage
+                          source={{uri: thumbnailUrl}}
+                          style={styles.photoImage}
+                          resizeMode="cover"
+                        />
+                      )
+                    ) : (
+                      <View style={styles.photoPlaceholder}>
+                        <Icon name="image-outline" size={32} color="#999999" />
+                      </View>
+                    )}
+                    
+                    {/* Loading overlay */}
+                    <View style={styles.pendingPhotoOverlay}>
+                      {pending.status === 'uploading' && (
+                        <View style={styles.pendingPhotoLoader}>
+                          <ActivityIndicator size="small" color="#FFFFFF" />
+                          <Text style={styles.pendingPhotoText}>Uploading...</Text>
+                        </View>
+                      )}
+                      {pending.status === 'adding' && (
+                        <View style={styles.pendingPhotoLoader}>
+                          <ActivityIndicator size="small" color="#FFFFFF" />
+                          <Text style={styles.pendingPhotoText}>Adding...</Text>
+                        </View>
+                      )}
+                      {pending.status === 'failed' && (
+                        <View style={styles.pendingPhotoLoader}>
+                          <Icon name="close-circle" size={24} color="#ff3040" />
+                          <Text style={styles.pendingPhotoText}>Failed</Text>
+                        </View>
+                      )}
+                    </View>
+                  </View>
                 </View>
               );
             })}
@@ -1420,6 +1609,28 @@ const styles = StyleSheet.create({
     marginTop: 8,
     fontSize: 14,
     color: '#666666',
+  },
+  pendingPhotoOverlay: {
+    position: 'absolute',
+    top: 0,
+    left: 0,
+    right: 0,
+    bottom: 0,
+    backgroundColor: 'rgba(0, 0, 0, 0.5)',
+    borderRadius: 4,
+    justifyContent: 'center',
+    alignItems: 'center',
+  },
+  pendingPhotoLoader: {
+    alignItems: 'center',
+    justifyContent: 'center',
+    gap: 8,
+  },
+  pendingPhotoText: {
+    color: '#FFFFFF',
+    fontSize: 12,
+    fontWeight: '500',
+    marginTop: 4,
   },
   localPhotoBadge: {
     position: 'absolute',

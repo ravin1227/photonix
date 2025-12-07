@@ -156,6 +156,17 @@ class UploadTrackingService {
       console.error('Error removing uploaded photo:', error);
     }
   }
+
+  // Remove album from tracking (if deleted from server)
+  async removeUploadedAlbum(deviceAlbumId: string) {
+    try {
+      const uploaded = await this.getUploadedAlbums();
+      const filtered = uploaded.filter(a => a.deviceAlbumId !== deviceAlbumId);
+      await AsyncStorage.setItem(UPLOADED_ALBUMS_KEY, JSON.stringify(filtered));
+    } catch (error) {
+      console.error('Error removing uploaded album:', error);
+    }
+  }
 }
 
 export default new UploadTrackingService();

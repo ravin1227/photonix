@@ -142,18 +142,43 @@ export default function AlbumsScreen() {
   useEffect(() => {
     if (route.params?.deletedAlbumId) {
       const deletedId = route.params.deletedAlbumId;
+      console.log('[AlbumsScreen] Handling deletion of album:', deletedId);
+
       // Remove the deleted album from the list silently
       setAlbums(prevAlbums => prevAlbums.filter(album => album.id !== deletedId));
-      // If this was a device-uploaded album, reload device albums to show it again
+
+      // If this was a device-uploaded album, restore it to device albums
       setDeviceUploadedServerAlbums(prevMap => {
         const newMap = new Map(prevMap);
-        newMap.delete(deletedId);
+        const deviceAlbumInfo = newMap.get(deletedId);
+
+        if (deviceAlbumInfo) {
+          console.log('[AlbumsScreen] Album was device-uploaded, restoring to device albums');
+          newMap.delete(deletedId);
+
+          // Find the device album ID associated with this server album and restore it
+          if (deviceAlbumInfo.deviceAlbumName) {
+            const deviceAlbum = deviceAlbums.find(a => a.name === deviceAlbumInfo.deviceAlbumName);
+            if (deviceAlbum) {
+              // Remove from tracking service and UI state
+              uploadTrackingService.removeUploadedAlbum(deviceAlbum.id);
+              setUploadedDeviceAlbums(prevSet => {
+                const newSet = new Set(prevSet);
+                newSet.delete(deviceAlbum.id);
+                console.log('[AlbumsScreen] Restored device album to Device Albums section:', deviceAlbum.id);
+                return newSet;
+              });
+            }
+          }
+        }
+
         return newMap;
       });
+
       // Clear the route param to prevent re-triggering
       navigation.setParams({deletedAlbumId: undefined});
     }
-  }, [route.params?.deletedAlbumId, navigation]);
+  }, [route.params?.deletedAlbumId, navigation, deviceAlbums]);
 
   const loadAlbums = async () => {
     try {

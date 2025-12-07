@@ -17,31 +17,18 @@ class PhotoStorageService
     # @param file [ActionDispatch::Http::UploadedFile] The uploaded file
     # @param user [User] The user who owns the photo
     # @return [Hash] Storage information including checksum, file_path, file_size
-    def store_photo(file, user)
+    # Store photo file using database ID as the path
+    # @param file [ActionDispatch::Http::UploadedFile] The uploaded file
+    # @param photo_id [Integer] The database photo ID to use as filename
+    # @return [Hash] Storage information including checksum, file_path, file_size
+    def store_photo(file, photo_id)
       begin
-      # Calculate checksums (SHA256 for storage integrity, SHA-1 for fast pre-check)
-      checksum = calculate_checksum(file)
-      sha1_hash = calculate_sha1_hash(file)
-
         # Get file extension safely
         filename = file.original_filename || 'photo.jpg'
         extension = File.extname(filename)
         extension = '.jpg' if extension.empty?
 
-        relative_path = generate_storage_path(checksum, extension)
-
-        # Ensure all path components are strings
-        storage_root = STORAGE_ROOT.to_s
-        originals_path = ORIGINALS_PATH.to_s
-        relative_path_str = relative_path.to_s
-
-        full_path = File.join(storage_root, originals_path, relative_path_str)
-
-      # Create directory if it doesn't exist
-        dir_path = File.dirname(full_path)
-        FileUtils.mkdir_p(dir_path)
-
-        # Copy file to storage - Rails UploadedFile has a path method
+        # Get file source path immediately before temp file cleanup can occur
         source_path = if file.respond_to?(:path) && file.path
                         file.path.to_s
                       elsif file.respond_to?(:tempfile) && file.tempfile
@@ -50,23 +37,56 @@ class PhotoStorageService
                         raise ArgumentError, "Unable to determine file path for uploaded file"
                       end
 
-        # Verify source file exists before copying
+        # Verify source file exists before doing anything else
         unless File.exist?(source_path)
           raise "Source file not found at: #{source_path}"
         end
 
-        FileUtils.cp(source_path, full_path)
+        # Generate storage path using photo ID instead of checksum
+        # This guarantees the path always matches the database record
+        relative_path = "#{photo_id}#{extension}"
+        date = Time.current
+        year = date.year.to_s
+        month = date.month.to_s.rjust(2, '0')
+        relative_path = File.join(year, month, relative_path)
 
-        # Verify destination file was created
-        unless File.exist?(full_path)
-          raise "Failed to copy file to: #{full_path}"
+        # Ensure all path components are strings
+        storage_root = STORAGE_ROOT.to_s
+        originals_path = ORIGINALS_PATH.to_s
+        relative_path_str = relative_path.to_s
+
+        full_path = File.join(storage_root, originals_path, relative_path_str)
+
+        # Create directory if it doesn't exist
+        dir_path = File.dirname(full_path)
+        FileUtils.mkdir_p(dir_path)
+
+        # Copy file using IO.copy_stream for better reliability
+        begin
+          File.open(source_path, 'rb') do |source|
+            File.open(full_path, 'wb') do |dest|
+              IO.copy_stream(source, dest)
+            end
+          end
+        rescue => e
+          raise "Failed to copy file to #{full_path}: #{e.message}"
         end
+
+        # Verify destination file was created and is readable
+        unless File.exist?(full_path) && File.readable?(full_path) && File.size(full_path) > 0
+          raise "Failed to store file at: #{full_path} - file exists: #{File.exist?(full_path)}, readable: #{File.readable?(full_path)}, size: #{File.exist?(full_path) ? File.size(full_path) : 0}"
+        end
+
+        # Now calculate checksums from the stored file (not the original temp file which may be cleaned up)
+        checksum = Digest::SHA256.file(full_path).hexdigest
+        sha1_hash = Digest::SHA1.file(full_path).hexdigest
+        file_size = File.size(full_path)
 
       {
         checksum: checksum,
         sha1_hash: sha1_hash,
         file_path: relative_path,
-        file_size: File.size(full_path),
+        file_size: file_size,
           format: extension.delete('.').downcase.presence || 'jpg'
       }
       rescue => e

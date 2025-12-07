@@ -81,19 +81,30 @@ module Api
 
         uploaded_files.each_with_index do |uploaded_file, index|
           begin
-            # Store the photo
-            storage_info = PhotoStorageService.store_photo(uploaded_file, current_user)
+            # First, check if this file already exists by checksum (before storing)
+            # This prevents unnecessary file storage for duplicates
+            temp_checksum = nil
+            temp_sha1 = nil
 
-            # Check if photo with this checksum already exists (idempotent upload)
-            # Check by SHA256 checksum first, then by SHA-1 hash
-            existing_photo = current_user.photos.active.find_by(checksum: storage_info[:checksum]) ||
-                            (storage_info[:sha1_hash] && current_user.photos.active.find_by(sha1_hash: storage_info[:sha1_hash]))
+            # Quick checksum calculation from uploaded file for duplicate detection
+            if uploaded_file.respond_to?(:path) && uploaded_file.path
+              temp_checksum = Digest::SHA256.file(uploaded_file.path).hexdigest
+              temp_sha1 = Digest::SHA1.file(uploaded_file.path).hexdigest
+            elsif uploaded_file.respond_to?(:tempfile) && uploaded_file.tempfile
+              temp_checksum = Digest::SHA256.file(uploaded_file.tempfile.path).hexdigest
+              temp_sha1 = Digest::SHA1.file(uploaded_file.tempfile.path).hexdigest
+            end
+
+            # Check if photo with this checksum already exists
+            existing_photo = nil
+            if temp_checksum
+              existing_photo = current_user.photos.active.find_by(checksum: temp_checksum) ||
+                              (temp_sha1 && current_user.photos.active.find_by(sha1_hash: temp_sha1))
+            end
 
             if existing_photo
-              # Photo already exists - clean up the newly stored file and return existing photo
-              PhotoStorageService.delete_photo(storage_info[:file_path])
-
-              Rails.logger.info "Duplicate photo detected (checksum: #{storage_info[:checksum]}, sha1: #{storage_info[:sha1_hash]}), returning existing photo ID #{existing_photo.id}"
+              # Photo already exists - don't store file again
+              Rails.logger.info "Duplicate photo detected (checksum: #{temp_checksum}, sha1: #{temp_sha1}), returning existing photo ID #{existing_photo.id}"
 
               results[:successful] << {
                 index: index,
@@ -102,42 +113,48 @@ module Api
                 duplicate: true
               }
             else
-              # Extract EXIF data
-              full_path = PhotoStorageService.original_path(storage_info[:file_path])
-              exif_data = ExifExtractionService.extract(full_path)
-
-              # Use captured_at from params if provided and EXIF didn't extract it
-              # Handle both array format (captured_at[] from bulk upload) and single value
-              if exif_data[:captured_at].nil?
-                captured_at_value = nil
-                
-                # Check for array format first (captured_at[] from bulk upload)
-                if params[:captured_at].is_a?(Array) && params[:captured_at][index].present?
-                  captured_at_value = params[:captured_at][index]
-                # Fallback to single value (for single uploads or if array index doesn't exist)
-                elsif params[:captured_at].present? && !params[:captured_at].is_a?(Array)
-                  captured_at_value = params[:captured_at]
-                end
-                
-                if captured_at_value.present?
-                  exif_data[:captured_at] = captured_at_value
-                  Rails.logger.info "Using captured_at from params for photo #{index}: #{captured_at_value}"
-                end
-              end
-
-              # Create photo record
+              # Create photo record first (to get the ID for file storage path)
               photo = current_user.photos.new(
                 original_filename: uploaded_file.original_filename,
-                file_path: storage_info[:file_path],
-                file_size: storage_info[:file_size],
-                format: storage_info[:format],
-                checksum: storage_info[:checksum],
-                sha1_hash: storage_info[:sha1_hash],
-                processing_status: 'pending',
-                **exif_data
+                processing_status: 'pending'
               )
 
               if photo.save
+                # Now store the file using the photo ID as the path
+                storage_info = PhotoStorageService.store_photo(uploaded_file, photo.id)
+
+                # Extract EXIF data from the stored file
+                full_path = PhotoStorageService.original_path(storage_info[:file_path])
+                exif_data = ExifExtractionService.extract(full_path)
+
+                # Use captured_at from params if provided and EXIF didn't extract it
+                if exif_data[:captured_at].nil?
+                  captured_at_value = nil
+
+                  # Check for array format first (captured_at[] from bulk upload)
+                  if params[:captured_at].is_a?(Array) && params[:captured_at][index].present?
+                    captured_at_value = params[:captured_at][index]
+                  # Fallback to single value (for single uploads or if array index doesn't exist)
+                  elsif params[:captured_at].present? && !params[:captured_at].is_a?(Array)
+                    captured_at_value = params[:captured_at]
+                  end
+
+                  if captured_at_value.present?
+                    exif_data[:captured_at] = captured_at_value
+                    Rails.logger.info "Using captured_at from params for photo #{photo.id}: #{captured_at_value}"
+                  end
+                end
+
+                # Update photo record with file and EXIF data
+                photo.update(
+                  file_path: storage_info[:file_path],
+                  file_size: storage_info[:file_size],
+                  format: storage_info[:format],
+                  checksum: storage_info[:checksum],
+                  sha1_hash: storage_info[:sha1_hash],
+                  **exif_data
+                )
+
                 # Enqueue thumbnail generation
                 GenerateThumbnailsJob.perform_later(photo.id)
 
@@ -150,8 +167,7 @@ module Api
                   photo: photo_response(photo)
                 }
               else
-                # Clean up stored file if database save fails
-                PhotoStorageService.delete_photo(storage_info[:file_path])
+                # Failed to create photo record
                 results[:failed] << {
                   index: index,
                   filename: uploaded_file.original_filename,

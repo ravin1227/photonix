@@ -155,7 +155,7 @@ class PhotoService {
   }
 
   // Upload multiple photos (bulk upload)
-  async uploadPhotos(files: Array<{uri: string; type: string; name: string}>) {
+  async uploadPhotos(files: Array<{uri: string; type: string; name: string; capturedAt?: string}>) {
     try {
       console.log(`[PhotoService] Starting upload of ${files.length} photos`);
       const {getApiUrl} = require('../config/api');
@@ -173,6 +173,12 @@ class PhotoService {
           type: file.type || 'image/jpeg', // Ensure type is set
           name: file.name || `photo_${Date.now()}_${index}.jpg`, // Ensure name is set
         } as any);
+        
+        // Append captured_at timestamp if provided (Rails expects captured_at[] array)
+        if (file.capturedAt) {
+          formData.append('captured_at[]', file.capturedAt);
+          console.log(`[PhotoService] Added captured_at for ${file.name}: ${file.capturedAt}`);
+        }
       });
 
       const token = apiService.getToken();

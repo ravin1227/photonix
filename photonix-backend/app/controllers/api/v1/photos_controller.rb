@@ -107,9 +107,22 @@ module Api
               exif_data = ExifExtractionService.extract(full_path)
 
               # Use captured_at from params if provided and EXIF didn't extract it
-              if exif_data[:captured_at].nil? && params[:captured_at].present?
-                exif_data[:captured_at] = params[:captured_at]
-                Rails.logger.info "Using captured_at from params: #{params[:captured_at]}"
+              # Handle both array format (captured_at[] from bulk upload) and single value
+              if exif_data[:captured_at].nil?
+                captured_at_value = nil
+                
+                # Check for array format first (captured_at[] from bulk upload)
+                if params[:captured_at].is_a?(Array) && params[:captured_at][index].present?
+                  captured_at_value = params[:captured_at][index]
+                # Fallback to single value (for single uploads or if array index doesn't exist)
+                elsif params[:captured_at].present? && !params[:captured_at].is_a?(Array)
+                  captured_at_value = params[:captured_at]
+                end
+                
+                if captured_at_value.present?
+                  exif_data[:captured_at] = captured_at_value
+                  Rails.logger.info "Using captured_at from params for photo #{index}: #{captured_at_value}"
+                end
               end
 
               # Create photo record

@@ -1,4 +1,4 @@
-import React, {useState, useEffect} from 'react';
+import React, {useState, useEffect, useRef} from 'react';
 import {
   View,
   Text,
@@ -10,10 +10,11 @@ import {
   ActivityIndicator,
   Alert,
   Switch,
+  ScrollView,
 } from 'react-native';
 import {SafeAreaView} from 'react-native-safe-area-context';
 import Icon from 'react-native-vector-icons/Ionicons';
-import albumSharingService, {AlbumShare, AlbumSharesResponse} from '../services/albumSharingService';
+import albumSharingService, {AlbumShare, AlbumSharesResponse, UserSearchResult} from '../services/albumSharingService';
 
 interface ShareAlbumModalProps {
   visible: boolean;
@@ -28,18 +29,79 @@ export default function ShareAlbumModal({
   albumName,
   onClose,
 }: ShareAlbumModalProps) {
-  const [email, setEmail] = useState('');
+  const [searchQuery, setSearchQuery] = useState('');
+  const [searchResults, setSearchResults] = useState<UserSearchResult[]>([]);
+  const [isSearching, setIsSearching] = useState(false);
+  const [showSearchResults, setShowSearchResults] = useState(false);
+  const [selectedUsers, setSelectedUsers] = useState<Array<UserSearchResult & {canContribute: boolean}>>([]);
   const [canContribute, setCanContribute] = useState(false);
   const [isSharing, setIsSharing] = useState(false);
   const [isLoading, setIsLoading] = useState(false);
   const [shares, setShares] = useState<AlbumShare[]>([]);
   const [owner, setOwner] = useState<{id: number; name: string; email: string} | null>(null);
+  const searchTimeoutRef = useRef<ReturnType<typeof setTimeout> | null>(null);
 
   useEffect(() => {
     if (visible) {
       loadShares();
+    } else {
+      // Reset form when modal closes
+      setSearchQuery('');
+      setSearchResults([]);
+      setSelectedUsers([]);
+      setShowSearchResults(false);
+      setCanContribute(false);
     }
   }, [visible, albumId]);
+
+  // Debounced user search
+  useEffect(() => {
+    if (searchTimeoutRef.current) {
+      clearTimeout(searchTimeoutRef.current);
+    }
+
+    if (!searchQuery.trim()) {
+      setSearchResults([]);
+      setShowSearchResults(false);
+      setIsSearching(false);
+      return;
+    }
+
+    setIsSearching(true);
+    searchTimeoutRef.current = setTimeout(async () => {
+      try {
+        console.log('Searching users with query:', searchQuery.trim());
+        const response = await albumSharingService.searchUsers(searchQuery.trim());
+        console.log('Search response:', response);
+        if (response.error) {
+          console.error('Search error:', response.error);
+          setSearchResults([]);
+          setShowSearchResults(false);
+        } else if (response.data) {
+          // Filter out users already added and owner
+          const filtered = response.data.users.filter(
+            user => !selectedUsers.some(s => s.id === user.id) &&
+                     !(owner && owner.id === user.id)
+          );
+          console.log('Filtered search results:', filtered);
+          setSearchResults(filtered);
+          setShowSearchResults(filtered.length > 0);
+        }
+      } catch (error) {
+        console.error('Error searching users:', error);
+        setSearchResults([]);
+        setShowSearchResults(false);
+      } finally {
+        setIsSearching(false);
+      }
+    }, 300);
+
+    return () => {
+      if (searchTimeoutRef.current) {
+        clearTimeout(searchTimeoutRef.current);
+      }
+    };
+  }, [searchQuery, selectedUsers, owner]);
 
   const loadShares = async () => {
     try {
@@ -57,33 +119,65 @@ export default function ShareAlbumModal({
     }
   };
 
-  const handleShare = async () => {
-    if (!email.trim()) {
-      Alert.alert('Error', 'Please enter an email address');
-      return;
-    }
+  const handleAddUser = (user: UserSearchResult) => {
+    const newUser = {...user, canContribute};
+    setSelectedUsers(prev => [...prev, newUser]);
+    setSearchQuery('');
+    setSearchResults([]);
+    setShowSearchResults(false);
+    console.log('Added user:', newUser);
+  };
 
-    // Basic email validation
-    const emailRegex = /^[^\s@]+@[^\s@]+\.[^\s@]+$/;
-    if (!emailRegex.test(email.trim())) {
-      Alert.alert('Error', 'Please enter a valid email address');
+  const handleRemoveUser = (userId: number) => {
+    setSelectedUsers(prev => prev.filter(u => u.id !== userId));
+  };
+
+  const handleShare = async () => {
+    if (selectedUsers.length === 0) {
+      Alert.alert('Error', 'Please select at least one user to share with');
       return;
     }
 
     try {
       setIsSharing(true);
-      const response = await albumSharingService.shareAlbum(
-        albumId,
-        email.trim().toLowerCase(),
-        canContribute
-      );
+      const errors: string[] = [];
 
-      if (response.error) {
-        Alert.alert('Error', response.error);
-      } else {
-        Alert.alert('Success', response.data?.message || 'Album shared successfully');
-        setEmail('');
+      // Share with each selected user
+      for (const user of selectedUsers) {
+        try {
+          console.log(`Sharing with user: ${user.email}, canContribute: ${user.canContribute}`);
+          const response = await albumSharingService.shareAlbum(
+            albumId,
+            user.email,
+            user.canContribute
+          );
+
+          if (response.error) {
+            errors.push(`${user.name}: ${response.error}`);
+          } else {
+            console.log(`Successfully shared with ${user.email}`);
+          }
+        } catch (error: any) {
+          errors.push(`${user.name}: ${error.message}`);
+        }
+      }
+
+      if (errors.length === 0) {
+        Alert.alert(
+          'Success',
+          `Album shared with ${selectedUsers.length} user${selectedUsers.length === 1 ? '' : 's'}`
+        );
+        setSelectedUsers([]);
         setCanContribute(false);
+        loadShares();
+      } else {
+        Alert.alert(
+          'Partial Success',
+          `Shared with ${selectedUsers.length - errors.length} user${selectedUsers.length - errors.length === 1 ? '' : 's'}.\n\nFailed:\n${errors.join('\n')}`
+        );
+        // Remove successfully shared users from the list
+        const failedEmails = new Set(errors.map(e => e.split(':')[0]));
+        setSelectedUsers(prev => prev.filter(u => failedEmails.has(u.name)));
         loadShares();
       }
     } catch (error: any) {
@@ -170,17 +264,67 @@ export default function ShareAlbumModal({
         </View>
 
         {/* Share Form */}
-        <View style={styles.shareForm}>
+        <ScrollView style={styles.shareForm}>
           <Text style={styles.sectionTitle}>Share with someone</Text>
-          <TextInput
-            style={styles.emailInput}
-            placeholder="Enter email address"
-            value={email}
-            onChangeText={setEmail}
-            keyboardType="email-address"
-            autoCapitalize="none"
-            autoCorrect={false}
-          />
+
+          {/* Search Input */}
+          <View style={styles.searchContainer}>
+            <Icon name="search" size={20} color="#999999" style={styles.searchIcon} />
+            <TextInput
+              style={styles.searchInput}
+              placeholder="Search user by name or email"
+              value={searchQuery}
+              onChangeText={setSearchQuery}
+              autoCapitalize="none"
+              autoCorrect={false}
+            />
+            {isSearching && <ActivityIndicator color="#999999" style={styles.searchSpinner} />}
+          </View>
+
+          {/* Search Results Dropdown */}
+          {showSearchResults && searchResults.length > 0 && (
+            <View style={styles.searchResultsContainer}>
+              <FlatList
+                data={searchResults}
+                renderItem={({item}) => (
+                  <TouchableOpacity
+                    style={styles.searchResultItem}
+                    onPress={() => handleAddUser(item)}>
+                    <View style={styles.resultInfo}>
+                      <Text style={styles.resultName}>{item.name}</Text>
+                      <Text style={styles.resultEmail}>{item.email}</Text>
+                    </View>
+                    <Icon name="add-circle" size={24} color="#2196f3" />
+                  </TouchableOpacity>
+                )}
+                keyExtractor={item => item.id.toString()}
+                scrollEnabled={false}
+              />
+            </View>
+          )}
+
+          {/* Selected Users */}
+          {selectedUsers.length > 0 && (
+            <View style={styles.selectedUsersContainer}>
+              <Text style={styles.selectedUsersTitle}>Adding access for:</Text>
+              {selectedUsers.map(user => (
+                <View key={user.id} style={styles.selectedUserItem}>
+                  <View style={styles.selectedUserInfo}>
+                    <Text style={styles.selectedUserName}>{user.name}</Text>
+                    <Text style={styles.selectedUserEmail}>{user.email}</Text>
+                    <Text style={styles.selectedUserPermission}>
+                      {user.canContribute ? 'Can view and add photos' : 'Can view only'}
+                    </Text>
+                  </View>
+                  <TouchableOpacity
+                    style={styles.removeUserButton}
+                    onPress={() => handleRemoveUser(user.id)}>
+                    <Icon name="close-circle" size={24} color="#F44336" />
+                  </TouchableOpacity>
+                </View>
+              ))}
+            </View>
+          )}
 
           <View style={styles.permissionRow}>
             <View style={styles.permissionInfo}>
@@ -207,19 +351,21 @@ export default function ShareAlbumModal({
           </View>
 
           <TouchableOpacity
-            style={[styles.shareButton, isSharing && styles.shareButtonDisabled]}
+            style={[styles.shareButton, (isSharing || selectedUsers.length === 0) && styles.shareButtonDisabled]}
             onPress={handleShare}
-            disabled={isSharing}>
+            disabled={isSharing || selectedUsers.length === 0}>
             {isSharing ? (
               <ActivityIndicator color="#FFFFFF" />
             ) : (
               <>
                 <Icon name="share-outline" size={20} color="#FFFFFF" />
-                <Text style={styles.shareButtonText}>Share Album</Text>
+                <Text style={styles.shareButtonText}>
+                  Share with {selectedUsers.length} {selectedUsers.length === 1 ? 'user' : 'users'}
+                </Text>
               </>
             )}
           </TouchableOpacity>
-        </View>
+        </ScrollView>
 
         {/* Shared With List */}
         <View style={styles.sharedList}>
@@ -299,6 +445,102 @@ const styles = StyleSheet.create({
     fontWeight: '600',
     color: '#000000',
     marginBottom: 12,
+  },
+  searchContainer: {
+    flexDirection: 'row',
+    alignItems: 'center',
+    borderWidth: 1,
+    borderColor: '#E0E0E0',
+    borderRadius: 8,
+    paddingHorizontal: 12,
+    marginBottom: 12,
+    backgroundColor: '#F9F9F9',
+  },
+  searchIcon: {
+    marginRight: 8,
+  },
+  searchInput: {
+    flex: 1,
+    paddingVertical: 12,
+    fontSize: 16,
+  },
+  searchSpinner: {
+    marginLeft: 8,
+  },
+  searchResultsContainer: {
+    borderWidth: 1,
+    borderColor: '#E0E0E0',
+    borderRadius: 8,
+    marginBottom: 12,
+    backgroundColor: '#FFFFFF',
+  },
+  searchResultItem: {
+    flexDirection: 'row',
+    alignItems: 'center',
+    justifyContent: 'space-between',
+    paddingVertical: 12,
+    paddingHorizontal: 12,
+    borderBottomWidth: 1,
+    borderBottomColor: '#F0F0F0',
+  },
+  resultInfo: {
+    flex: 1,
+  },
+  resultName: {
+    fontSize: 14,
+    fontWeight: '500',
+    color: '#000000',
+    marginBottom: 2,
+  },
+  resultEmail: {
+    fontSize: 12,
+    color: '#666666',
+  },
+  selectedUsersContainer: {
+    backgroundColor: '#F0F8FF',
+    borderWidth: 1,
+    borderColor: '#BFE0FF',
+    borderRadius: 8,
+    padding: 12,
+    marginBottom: 16,
+  },
+  selectedUsersTitle: {
+    fontSize: 13,
+    fontWeight: '600',
+    color: '#2196f3',
+    marginBottom: 8,
+  },
+  selectedUserItem: {
+    flexDirection: 'row',
+    alignItems: 'center',
+    justifyContent: 'space-between',
+    paddingVertical: 8,
+    paddingHorizontal: 8,
+    backgroundColor: '#FFFFFF',
+    borderRadius: 6,
+    marginBottom: 6,
+  },
+  selectedUserInfo: {
+    flex: 1,
+  },
+  selectedUserName: {
+    fontSize: 14,
+    fontWeight: '500',
+    color: '#000000',
+    marginBottom: 2,
+  },
+  selectedUserEmail: {
+    fontSize: 12,
+    color: '#666666',
+    marginBottom: 2,
+  },
+  selectedUserPermission: {
+    fontSize: 11,
+    color: '#2196f3',
+    fontWeight: '500',
+  },
+  removeUserButton: {
+    padding: 4,
   },
   emailInput: {
     borderWidth: 1,

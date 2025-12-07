@@ -10,9 +10,27 @@
 #
 # It's strongly recommended that you check this file into your version control system.
 
-ActiveRecord::Schema[8.1].define(version: 2025_11_23_074027) do
+ActiveRecord::Schema[8.1].define(version: 2025_12_07_135241) do
   # These are extensions that must be enabled in order to support this database
   enable_extension "pg_catalog.plpgsql"
+
+  create_table "album_auto_syncs", force: :cascade do |t|
+    t.datetime "created_at", null: false
+    t.bigint "device_album_upload_id"
+    t.boolean "enabled", default: false, null: false
+    t.integer "last_photo_count", default: 0, null: false
+    t.datetime "last_sync_at"
+    t.integer "new_photos_since_sync", default: 0, null: false
+    t.bigint "server_album_id", null: false
+    t.string "sync_frequency", default: "manual", null: false
+    t.datetime "updated_at", null: false
+    t.bigint "user_id", null: false
+    t.index ["device_album_upload_id", "server_album_id"], name: "idx_auto_sync_unique", unique: true
+    t.index ["device_album_upload_id"], name: "index_album_auto_syncs_on_device_album_upload_id"
+    t.index ["enabled"], name: "index_album_auto_syncs_on_enabled"
+    t.index ["server_album_id"], name: "index_album_auto_syncs_on_server_album_id"
+    t.index ["user_id"], name: "index_album_auto_syncs_on_user_id"
+  end
 
   create_table "album_users", force: :cascade do |t|
     t.bigint "album_id", null: false
@@ -40,6 +58,23 @@ ActiveRecord::Schema[8.1].define(version: 2025_11_23_074027) do
     t.bigint "user_id", null: false
     t.index ["created_by_id"], name: "index_albums_on_created_by_id"
     t.index ["user_id"], name: "index_albums_on_user_id"
+  end
+
+  create_table "device_album_uploads", force: :cascade do |t|
+    t.datetime "created_at", null: false
+    t.string "device_album_id", null: false
+    t.string "device_album_name", null: false
+    t.string "device_type", null: false
+    t.datetime "last_upload_at"
+    t.bigint "server_album_id"
+    t.integer "total_device_count", default: 0, null: false
+    t.datetime "updated_at", null: false
+    t.integer "uploaded_count", default: 0, null: false
+    t.bigint "user_id", null: false
+    t.index ["last_upload_at"], name: "index_device_album_uploads_on_last_upload_at"
+    t.index ["server_album_id"], name: "index_device_album_uploads_on_server_album_id"
+    t.index ["user_id", "device_album_id", "device_type"], name: "idx_device_uploads_unique", unique: true
+    t.index ["user_id"], name: "index_device_album_uploads_on_user_id"
   end
 
   create_table "faces", force: :cascade do |t|
@@ -160,10 +195,15 @@ ActiveRecord::Schema[8.1].define(version: 2025_11_23_074027) do
     t.index ["role"], name: "index_users_on_role"
   end
 
+  add_foreign_key "album_auto_syncs", "albums", column: "server_album_id"
+  add_foreign_key "album_auto_syncs", "device_album_uploads"
+  add_foreign_key "album_auto_syncs", "users"
   add_foreign_key "album_users", "albums"
   add_foreign_key "album_users", "users"
   add_foreign_key "albums", "users"
   add_foreign_key "albums", "users", column: "created_by_id"
+  add_foreign_key "device_album_uploads", "albums", column: "server_album_id"
+  add_foreign_key "device_album_uploads", "users"
   add_foreign_key "faces", "people"
   add_foreign_key "faces", "photos"
   add_foreign_key "login_tokens", "users"

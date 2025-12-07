@@ -8,6 +8,8 @@ class User < ApplicationRecord
   has_many :album_users, dependent: :destroy
   has_many :shared_albums, through: :album_users, source: :album
   has_many :login_tokens, dependent: :destroy
+  has_many :device_album_uploads, dependent: :destroy
+  has_many :album_auto_syncs, dependent: :destroy
 
   # Validations
   validates :email, presence: true, uniqueness: true, format: { with: URI::MailTo::EMAIL_REGEXP }

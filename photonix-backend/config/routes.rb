@@ -46,6 +46,19 @@ Rails.application.routes.draw do
         resources :shares, controller: 'album_shares', only: [:index, :create, :destroy]
       end
 
+      # Device Albums
+      resources :device_albums, only: [:show] do
+        collection do
+          post 'track'
+          get 'uploads'
+        end
+        member do
+          post 'sync/enable', to: 'device_albums#enable_sync'
+          post 'sync/disable', to: 'device_albums#disable_sync'
+          get 'sync/status', to: 'device_albums#sync_status'
+        end
+      end
+
       # Tags
       resources :tags, only: [:index, :show, :create]
 

@@ -8,6 +8,8 @@ class Album < ApplicationRecord
   has_many :photos, through: :photo_albums
   has_many :album_users, dependent: :destroy
   has_many :shared_with_users, through: :album_users, source: :user
+  has_many :device_album_uploads, foreign_key: 'server_album_id', dependent: :nullify
+  has_many :album_auto_syncs, foreign_key: 'server_album_id', dependent: :nullify
 
   # Validations
   validates :name, presence: true

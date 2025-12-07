@@ -27,14 +27,14 @@ class PhotoStorageService
         filename = file.original_filename || 'photo.jpg'
         extension = File.extname(filename)
         extension = '.jpg' if extension.empty?
-        
+
         relative_path = generate_storage_path(checksum, extension)
-        
+
         # Ensure all path components are strings
         storage_root = STORAGE_ROOT.to_s
         originals_path = ORIGINALS_PATH.to_s
         relative_path_str = relative_path.to_s
-        
+
         full_path = File.join(storage_root, originals_path, relative_path_str)
 
       # Create directory if it doesn't exist
@@ -49,7 +49,18 @@ class PhotoStorageService
                       else
                         raise ArgumentError, "Unable to determine file path for uploaded file"
                       end
+
+        # Verify source file exists before copying
+        unless File.exist?(source_path)
+          raise "Source file not found at: #{source_path}"
+        end
+
         FileUtils.cp(source_path, full_path)
+
+        # Verify destination file was created
+        unless File.exist?(full_path)
+          raise "Failed to copy file to: #{full_path}"
+        end
 
       {
         checksum: checksum,

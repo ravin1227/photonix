@@ -329,8 +329,16 @@ export default function AlbumDetailScreen() {
         return; // User cancelled
       }
 
+      // Prepare photos with capturedAt timestamps
+      const photosToUpload = selectedPhotos.map(photo => ({
+        uri: photo.uri,
+        type: photo.type,
+        name: photo.name,
+        capturedAt: photo.timestamp ? new Date(photo.timestamp).toISOString() : undefined,
+      }));
+
       // Upload photos first
-      const uploadResponse = await photoService.uploadPhotos(selectedPhotos);
+      const uploadResponse = await photoService.uploadPhotos(photosToUpload);
 
       if (uploadResponse.error) {
         Alert.alert('Upload Failed', uploadResponse.error);

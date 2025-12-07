@@ -16,12 +16,11 @@ RUN apt-get update -qq && \
 
 WORKDIR /rails
 
-# Copy Gemfile first for better caching
-COPY Gemfile ./
+# Copy Gemfile and Gemfile.lock
+COPY Gemfile Gemfile.lock ./
 
-# Install gems (generate fresh Gemfile.lock for Linux)
-RUN bundle lock --add-platform arm64-linux && \
-    bundle install
+# Install gems
+RUN bundle install --verbose
 
 # Copy rest of application
 COPY . .

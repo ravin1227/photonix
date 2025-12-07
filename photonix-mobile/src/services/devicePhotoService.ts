@@ -338,7 +338,7 @@ class DevicePhotoService {
   async getPhotosForDateRange(startDate: Date, endDate: Date): Promise<DevicePhoto[]> {
     try {
       const {photos} = await this.getPhotos(1000);
-      
+
       return photos.filter(photo => {
         const photoDate = new Date(photo.timestamp);
         return photoDate >= startDate && photoDate <= endDate;
@@ -346,6 +346,42 @@ class DevicePhotoService {
     } catch (error: any) {
       console.error('Error getting photos for date range:', error);
       throw error;
+    }
+  }
+
+  // Get ALL photos from a specific device album (with pagination)
+  async getAllAlbumPhotos(albumName: string): Promise<DevicePhoto[]> {
+    try {
+      console.log(`[DevicePhotoService] Getting all photos from album: ${albumName}`);
+      const allPhotos: DevicePhoto[] = [];
+      let after: string | undefined = undefined;
+      let hasMore = true;
+      const BATCH_SIZE = 100;
+
+      // Request permission if not already granted
+      if (this.hasPermission === null || this.hasPermission === false) {
+        const granted = await this.requestPermission();
+        if (!granted) {
+          throw new Error('Photo library permission denied');
+        }
+      }
+
+      // Fetch all photos using pagination
+      while (hasMore) {
+        const result = await this.getAlbumPhotos(albumName, BATCH_SIZE, after);
+        allPhotos.push(...result.photos);
+
+        console.log(`[DevicePhotoService] Loaded ${result.photos.length} photos from album, total so far: ${allPhotos.length}`);
+
+        hasMore = result.hasNextPage;
+        after = result.endCursor;
+      }
+
+      console.log(`[DevicePhotoService] Completed loading all ${allPhotos.length} photos from album: ${albumName}`);
+      return allPhotos;
+    } catch (error: any) {
+      console.error('[DevicePhotoService] Error getting all album photos:', error);
+      throw new Error(error.message || 'Failed to get album photos');
     }
   }
 }
